@@ -27,11 +27,11 @@
 
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
-        /* Custom scrollbar for tables */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #f1f1f1; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .cursor-wait { cursor: wait; }
     </style>
 </head>
 <body>
@@ -42,33 +42,44 @@
         import { createRoot } from 'react-dom/client';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, signOut } from 'firebase/auth';
-        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, query, writeBatch, getDocs, deleteDoc, updateDoc } from 'firebase/firestore';
+        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, query, writeBatch, getDocs, deleteDoc, updateDoc, where } from 'firebase/firestore';
+        
+        // Ensure all icons used are imported
         import { 
             BarChart3, Save, Upload, FileSpreadsheet, Database, Users, LogOut, ChevronLeft, ChevronRight, 
             Search, Plus, ArrowDownToLine, Lock, FileText, FileUp, AlertCircle, XCircle, CheckCircle, 
-            Trash2, AlertTriangle, Loader2, RefreshCw, Eye, EyeOff, UserCog, Key 
+            Trash2, AlertTriangle, Loader2, RefreshCw, Eye, EyeOff, UserCog, Key, RotateCcw, ShieldAlert, X, Eraser, Bug, Terminal
         } from 'lucide-react';
 
-        // --- Firebase Configuration ---
-        const firebaseConfig = typeof __firebase_config !== 'undefined' 
-            ? JSON.parse(__firebase_config) 
-            : { 
-                apiKey: "AIzaSyB8Wg2Em8cwZKafWPXBHFFKh_3fRBchO3Y", 
-                authDomain: "sonywsr-c2de6.firebaseapp.com", 
-                projectId: "sonywsr-c2de6", 
-                storageBucket: "sonywsr-c2de6.firebasestorage.app", 
-                messagingSenderId: "1042008011332", 
-                appId: "1:1042008011332:web:a8136ba248ff934615c211" 
-              };
+        // --- Firebase Configuration & Initialization ---
+        const userProvidedConfig = { 
+            apiKey: "AIzaSyBWUoQUq8F5nNbz4hz6DY_OL4lzo6Diqi4",
+            authDomain: "sonywsr2.firebaseapp.com",
+            projectId: "sonywsr2",
+            storageBucket: "sonywsr2.firebasestorage.app",
+            messagingSenderId: "587532959086",
+            appId: "1:587532959086:web:c16f654bf230add136557f"
+        };
 
+        const firebaseConfig = userProvidedConfig;
+        
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-        // --- Constants & Helpers ---
-        const ADMIN_ID = 'admin'; 
         
+        const appId = 'default-app-id';
+
+        // --- Helpers ---
+        const cleanStr = (str) => String(str || '').trim();
+        const cleanKey = (str) => cleanStr(str).toUpperCase().replace(/[^A-Z0-9-]/g, '_');
+
+        const generateProductKey = (internal, pos, pn) => {
+            if (internal && cleanStr(internal).length > 0) return cleanKey(internal);
+            if (pos && cleanStr(pos).length > 0 && !cleanStr(pos).includes('E+')) return cleanKey(pos);
+            if (pn && cleanStr(pn).length > 0) return cleanKey(pn);
+            return 'UNKNOWN_KEY';
+        };
+
         const getWeekNumber = (d) => {
             d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
             d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDate() || 7));
@@ -77,9 +88,8 @@
             return { year: d.getUTCFullYear(), week: weekNo };
         };
 
-        const INITIAL_DATE = new Date('2026-01-01');
+        const INITIAL_DATE = new Date(); 
         const getWeekString = (y, w) => `${y}-W${w.toString().padStart(2, '0')}`;
-
         const getDateRangeOfWeek = (w, y) => {
             const d = (1 + (w - 1) * 7);
             const date = new Date(y, 0, d);
@@ -92,7 +102,68 @@
 
         const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-        // --- Components ---
+        // --- Data Normalizer (Fix for Flat vs Nested Structure) ---
+        // 這就是解決您問題的關鍵函數
+        const normalizeReportData = (docData) => {
+            if (!docData) return {};
+
+            // 情況 1: 標準巢狀物件 (items: { Key: { in: 1 } }) - 理想情況
+            if (docData.items && typeof docData.items === 'object' && !Array.isArray(docData.items)) {
+                return docData.items;
+            }
+
+            // 情況 2: 扁平化 Key ("items.Key.in": 1) - 您目前的狀況
+            const items = {};
+            Object.keys(docData).forEach(key => {
+                if (key.startsWith('items.')) {
+                    // key 類似 "items.C202000042.in"
+                    const parts = key.split('.'); 
+                    if (parts.length === 3) {
+                        const prodKey = parts[1]; // "C202000042"
+                        const field = parts[2];   // "in"
+                        
+                        if (!items[prodKey]) items[prodKey] = {};
+                        items[prodKey][field] = docData[key];
+                    }
+                }
+            });
+            
+            return items;
+        };
+
+        // --- Shared Components ---
+
+        const ConfirmModal = ({ title, message, onConfirm, onCancel, confirmText = "確定", confirmColor = "blue" }) => (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
+                <div className="bg-white rounded-lg p-6 w-96 shadow-xl">
+                    <h3 className="text-lg font-bold mb-3 flex items-center text-gray-800"><ShieldAlert className="mr-2 text-yellow-500" size={24}/> {title}</h3>
+                    <div className="text-sm text-gray-600 mb-6 whitespace-pre-wrap">{message}</div>
+                    <div className="flex justify-end space-x-3">
+                        <button onClick={onCancel} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded border">取消</button>
+                        <button onClick={onConfirm} className={`px-4 py-2 text-white rounded font-bold shadow-sm ${confirmColor==='red'?'bg-red-600 hover:bg-red-700':'bg-blue-600 hover:bg-blue-700'}`}>{confirmText}</button>
+                    </div>
+                </div>
+            </div>
+        );
+
+        const MessageModal = ({ title, message, onClose, type = "info" }) => (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
+                <div className="bg-white rounded-lg p-6 w-[500px] shadow-xl max-h-[80vh] flex flex-col">
+                    <div className="flex justify-between items-start mb-4">
+                        <h3 className={`text-lg font-bold flex items-center ${type==='error'?'text-red-600':'text-gray-800'}`}>{type==='error'?<AlertCircle className="mr-2"/>:<CheckCircle className="mr-2 text-green-500"/>}{title}</h3>
+                        <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
+                    </div>
+                    <div className="text-sm text-gray-600 mb-6 whitespace-pre-wrap overflow-y-auto flex-1 p-3 bg-gray-100 rounded border border-gray-300 font-mono break-all">{message}</div>
+                    <div className="flex justify-end"><button onClick={onClose} className="px-4 py-2 bg-gray-800 text-white rounded hover:bg-gray-700">關閉</button></div>
+                </div>
+            </div>
+        );
+
+        const NavButton = ({ active, onClick, icon, label }) => (
+            <button onClick={onClick} className={`flex items-center space-x-2 px-4 py-2 rounded transition-colors ${active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
+                {icon} <span>{label}</span>
+            </button>
+        );
 
         const LoginScreen = ({ onLogin }) => {
             const [username, setUsername] = useState('');
@@ -118,7 +189,6 @@
                             setError('密碼錯誤');
                         }
                     } else {
-                        // Fallback for Initial Admin if DB is empty
                         if (username === 'admin' && password === 'admin') {
                             const adminData = { username: 'admin', password: 'admin', role: 'admin', name: '系統管理員', erp_code: '' };
                             onLogin({ ...adminData, uid: 'admin' });
@@ -128,7 +198,7 @@
                     }
                 } catch (err) {
                     console.error(err);
-                    setError('登入系統發生錯誤，請稍後再試 (Firebase 連線問題)');
+                    setError(`登入系統發生錯誤: ${err.message} (請檢查 Firebase Console 是否開啟匿名登入及 Firestore 規則)`);
                 } finally {
                     setLoading(false);
                 }
@@ -140,7 +210,7 @@
                         <div className="text-center mb-8">
                             <div className="bg-black text-white inline-block px-4 py-2 text-2xl font-bold tracking-widest mb-2">SONY</div>
                             <h2 className="text-xl font-semibold text-gray-700">經銷商週報表系統</h2>
-                            <p className="text-sm text-gray-500 mt-2">2026 年度系統</p>
+                            <p className="text-sm text-gray-500 mt-2">2026 年度系統 (Connected to: sonywsr2)</p>
                         </div>
 
                         <form onSubmit={handleLogin} className="space-y-6">
@@ -190,177 +260,24 @@
             );
         };
 
-        const ChangePasswordModal = ({ user, onClose }) => {
-            const [newPass, setNewPass] = useState('');
-            const [confirmPass, setConfirmPass] = useState('');
-            const [status, setStatus] = useState('');
-
-            const handleUpdate = async () => {
-                if (!newPass) return setStatus('請輸入新密碼');
-                if (newPass !== confirmPass) return setStatus('兩次密碼輸入不一致');
-                
-                try {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', user.uid);
-                    await updateDoc(docRef, { password: newPass });
-                    alert('密碼修改成功！下次請使用新密碼登入。');
-                    onClose();
-                } catch (e) {
-                    setStatus('修改失敗: ' + e.message);
-                }
-            };
-
-            return (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg p-6 w-96 shadow-xl">
-                        <h3 className="text-lg font-bold mb-4 flex items-center"><Key className="mr-2"/> 修改密碼</h3>
-                        <div className="space-y-4">
-                            <input type="password" placeholder="新密碼" className="w-full border p-2 rounded" value={newPass} onChange={e=>setNewPass(e.target.value)} />
-                            <input type="password" placeholder="再次確認新密碼" className="w-full border p-2 rounded" value={confirmPass} onChange={e=>setConfirmPass(e.target.value)} />
-                            {status && <p className="text-red-500 text-sm">{status}</p>}
-                            <div className="flex justify-end space-x-2">
-                                <button onClick={onClose} className="px-4 py-2 text-gray-500 hover:bg-gray-100 rounded">取消</button>
-                                <button onClick={handleUpdate} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">確認修改</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        const NavButton = ({ active, onClick, icon, label }) => (
-            <button onClick={onClick} className={`flex items-center space-x-2 px-4 py-2 rounded transition-colors ${active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
-                {icon} <span>{label}</span>
-            </button>
-        );
-
-        const App = () => {
-            const [user, setUser] = useState(null);
-            const [currentWeek, setCurrentWeek] = useState(getWeekNumber(INITIAL_DATE));
-            const [products, setProducts] = useState([]);
-            const [accounts, setAccounts] = useState([]); 
-            const [view, setView] = useState('report');
-            const [showPasswordModal, setShowPasswordModal] = useState(false);
-
-            useEffect(() => {
-                const initAuth = async () => {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        try {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        } catch (e) {
-                            console.warn("Custom token auth failed, falling back to anonymous", e);
-                            await signInAnonymously(auth);
-                        }
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                };
-                initAuth();
-            }, []);
-
-            useEffect(() => {
-                if (!user) return;
-                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'products'));
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const pList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    pList.sort((a, b) => (a.sortOrder || 9999) - (b.sortOrder || 9999));
-                    setProducts(pList);
-                });
-                return () => unsubscribe();
-            }, [user]);
-
-            useEffect(() => {
-                if (!user) return;
-                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'accounts'));
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const accList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setAccounts(accList);
-                });
-                return () => unsubscribe();
-            }, [user]);
-
-            const dealers = useMemo(() => accounts.filter(a => a.role === 'dealer'), [accounts]);
-
-            const changeWeek = (offset) => {
-                let newWeek = currentWeek.week + offset;
-                let newYear = currentWeek.year;
-                if (newWeek > 52) { newWeek = 1; newYear += 1; } 
-                else if (newWeek < 1) { newWeek = 52; newYear -= 1; }
-                setCurrentWeek({ year: newYear, week: newWeek });
-            };
-
-            if (!user) return <LoginScreen onLogin={setUser} />;
-            
-            const currentWeekStr = getWeekString(currentWeek.year, currentWeek.week);
-
-            return (
-                <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
-                    <header className="bg-black text-white p-4 shadow-md sticky top-0 z-50">
-                        <div className="max-w-7xl mx-auto flex justify-between items-center">
-                            <div className="flex items-center space-x-4">
-                                <span className="text-xl font-bold tracking-wider">SONY WSR</span>
-                                <div className="flex items-center space-x-2">
-                                    <span className="bg-gray-800 px-3 py-1 rounded text-sm text-gray-300 border border-gray-700 flex items-center">
-                                        <Users size={14} className="mr-2"/> {user.name}
-                                    </span>
-                                    <button onClick={() => setShowPasswordModal(true)} className="text-xs text-gray-400 hover:text-white underline">
-                                        修改密碼
-                                    </button>
-                                </div>
-                            </div>
-                            <div className="flex items-center space-x-4">
-                                {user.role === 'admin' && (
-                                    <nav className="hidden md:flex space-x-1">
-                                        <NavButton active={view === 'report'} onClick={() => setView('report')} icon={<FileSpreadsheet size={18}/>} label="單店檢視" />
-                                        <NavButton active={view === 'aggregate'} onClick={() => setView('aggregate')} icon={<BarChart3 size={18}/>} label="總匯總表" />
-                                        <NavButton active={view === 'products'} onClick={() => setView('products')} icon={<Database size={18}/>} label="產品資料庫" />
-                                        <NavButton active={view === 'import'} onClick={() => setView('import')} icon={<Upload size={18}/>} label="進貨匯入" />
-                                        <NavButton active={view === 'accounts'} onClick={() => setView('accounts')} icon={<UserCog size={18}/>} label="帳號管理" />
-                                    </nav>
-                                )}
-                                <button onClick={() => setUser(null)} className="text-gray-400 hover:text-white flex items-center"><LogOut size={18} className="mr-1" /> 登出</button>
-                            </div>
-                        </div>
-                    </header>
-
-                    {showPasswordModal && <ChangePasswordModal user={user} onClose={() => setShowPasswordModal(false)} />}
-
-                    <main className="max-w-7xl mx-auto p-4 md:p-6">
-                        <div className="flex justify-between items-center mb-6 bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <div className="flex items-center space-x-4">
-                                <button onClick={() => changeWeek(-1)} className="p-2 hover:bg-gray-100 rounded-full"><ChevronLeft /></button>
-                                <div className="text-center">
-                                    <div className="text-2xl font-bold text-gray-800">{currentWeek.year} 年 第 {currentWeek.week} 週</div>
-                                    <div className="text-sm text-gray-500">週報表區間 ({getDateRangeOfWeek(currentWeek.week, currentWeek.year)})</div>
-                                </div>
-                                <button onClick={() => changeWeek(1)} className="p-2 hover:bg-gray-100 rounded-full"><ChevronRight /></button>
-                            </div>
-                            <div className="text-right text-xs text-gray-400">資料自動儲存</div>
-                        </div>
-
-                        {view === 'accounts' && user.role === 'admin' && <AccountManager accounts={accounts} />}
-                        {view === 'products' && user.role === 'admin' && <ProductManager products={products} />}
-                        {view === 'import' && user.role === 'admin' && <ImportManager weekStr={currentWeekStr} products={products} accounts={accounts} />}
-                        {view === 'report' && <WeeklyReport user={user} weekStr={currentWeekStr} products={products} year={currentWeek.year} week={currentWeek.week} dealers={dealers} isAdmin={user.role === 'admin'} />}
-                        {view === 'aggregate' && user.role === 'admin' && <AggregateReport weekStr={currentWeekStr} products={products} dealers={dealers} year={currentWeek.year} week={currentWeek.week} />}
-                    </main>
-                </div>
-            );
-        };
+        // --- Manager Components ---
 
         const AccountManager = ({ accounts }) => {
             const [formData, setFormData] = useState({ username: '', password: '', name: '', erp_code: '', role: 'dealer' });
             const [isEditing, setIsEditing] = useState(false);
+            const [msgModal, setMsgModal] = useState(null);
+            const [modalConfig, setModalConfig] = useState(null);
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 if (!formData.username) return;
                 try {
                     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', formData.username), formData);
-                    alert(isEditing ? '帳號更新成功' : '帳號新增成功');
+                    setMsgModal({ title: "成功", message: isEditing ? '帳號更新成功' : '帳號新增成功', type: "success" });
                     setFormData({ username: '', password: '', name: '', erp_code: '', role: 'dealer' });
                     setIsEditing(false);
                 } catch (e) {
-                    alert('儲存失敗: ' + e.message);
+                    setMsgModal({ title: "失敗", message: '儲存失敗: ' + e.message, type: "error" });
                 }
             };
 
@@ -369,80 +286,87 @@
                 setIsEditing(true);
             };
 
+            const confirmDelete = (username) => {
+                setModalConfig({
+                    title: "刪除確認",
+                    message: `確定刪除帳號 ${username}？此操作無法復原。`,
+                    confirmText: "確認刪除",
+                    confirmColor: "red",
+                    onConfirm: () => {
+                        setModalConfig(null);
+                        handleDelete(username);
+                    }
+                });
+            };
+
             const handleDelete = async (username) => {
-                if (!confirm(`確定刪除帳號 ${username}？`)) return;
                 try {
                     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', username));
                 } catch (e) {
-                    alert('刪除失敗');
+                    setMsgModal({ title: "失敗", message: '刪除失敗: ' + e.message, type: "error" });
+                }
+            };
+
+            const confirmResetSystem = () => {
+                setModalConfig({
+                    title: "危險操作：重置系統",
+                    message: "您確定要刪除所有「產品資料」與「週報表紀錄」嗎？\n\n此操作無法復原！僅保留帳號設定。\n\n建議在資料庫過於混亂時使用。",
+                    confirmText: "確認重置",
+                    confirmColor: "red",
+                    onConfirm: () => {
+                        setModalConfig(null);
+                        resetSystem();
+                    }
+                });
+            };
+
+            const resetSystem = async () => {
+                const batch = writeBatch(db);
+                let deletedCount = 0;
+                try {
+                    const productsSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'products'));
+                    productsSnap.forEach(doc => { batch.delete(doc.ref); deletedCount++; });
+                    const reportsSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'weekly_reports'));
+                    reportsSnap.forEach(doc => { batch.delete(doc.ref); deletedCount++; });
+                    await batch.commit();
+                    setMsgModal({ title: "重置成功", message: `系統已重置！共刪除了 ${deletedCount} 筆資料。\n現在您可以重新匯入乾淨的產品與進貨單。`, type: "success" });
+                } catch (e) {
+                    setMsgModal({ title: "重置失敗", message: e.message, type: "error" });
                 }
             };
 
             return (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {msgModal && <MessageModal {...msgModal} onClose={() => setMsgModal(null)} />}
+                    {modalConfig && <ConfirmModal {...modalConfig} onCancel={() => setModalConfig(null)} />}
                     <div className="md:col-span-2 bg-white rounded-lg shadow p-6">
                         <h3 className="font-bold text-lg mb-4 flex items-center"><Users className="mr-2"/> 帳號列表</h3>
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-gray-100">
-                                    <tr>
-                                        <th className="p-3">帳號</th>
-                                        <th className="p-3">名稱</th>
-                                        <th className="p-3">角色</th>
-                                        <th className="p-3">ERP 代號</th>
-                                        <th className="p-3">密碼</th>
-                                        <th className="p-3">操作</th>
+                                <thead className="bg-gray-100"><tr><th className="p-3">帳號</th><th className="p-3">名稱</th><th className="p-3">ERP</th><th className="p-3">操作</th></tr></thead>
+                                <tbody className="divide-y">{accounts.map(acc => (
+                                    <tr key={acc.username} className="hover:bg-gray-50">
+                                        <td className="p-3 font-bold">{acc.username}</td><td className="p-3">{acc.name}</td><td className="p-3 font-mono">{acc.erp_code}</td>
+                                        <td className="p-3"><button onClick={() => handleEdit(acc)} className="text-blue-600 mr-2">編輯</button>{acc.username !== 'admin' && <button onClick={() => confirmDelete(acc.username)} className="text-red-600">刪除</button>}</td>
                                     </tr>
-                                </thead>
-                                <tbody className="divide-y">
-                                    {accounts.map(acc => (
-                                        <tr key={acc.username} className="hover:bg-gray-50">
-                                            <td className="p-3 font-bold">{acc.username}</td>
-                                            <td className="p-3">{acc.name}</td>
-                                            <td className="p-3"><span className={`px-2 py-1 rounded text-xs ${acc.role==='admin'?'bg-purple-100 text-purple-700':'bg-blue-100 text-blue-700'}`}>{acc.role}</span></td>
-                                            <td className="p-3 font-mono text-green-700">{acc.erp_code || '-'}</td>
-                                            <td className="p-3 text-gray-400">******</td>
-                                            <td className="p-3">
-                                                <button onClick={() => handleEdit(acc)} className="text-blue-600 mr-2 hover:underline">編輯</button>
-                                                {acc.username !== 'admin' && <button onClick={() => handleDelete(acc.username)} className="text-red-600 hover:underline">刪除</button>}
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
+                                ))}</tbody>
                             </table>
                         </div>
+                        <div className="mt-8 pt-4 border-t border-gray-200">
+                            <button onClick={confirmResetSystem} className="bg-red-50 text-red-600 border border-red-200 px-4 py-2 rounded flex items-center w-full justify-center hover:bg-red-100"><Trash2 className="mr-2" size={18}/> 🔥 重置系統資料 (只保留帳號)</button>
+                        </div>
                     </div>
-
                     <div className="bg-white rounded-lg shadow p-6 h-fit sticky top-24">
-                        <h3 className="font-bold text-lg mb-4">{isEditing ? '編輯帳號' : '新增帳號'}</h3>
+                        <h3 className="font-bold text-lg mb-4">{isEditing ? '編輯' : '新增'}帳號</h3>
                         <form onSubmit={handleSubmit} className="space-y-4">
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase">帳號 (登入用)</label>
-                                <input type="text" className="w-full border p-2 rounded" value={formData.username} onChange={e=>setFormData({...formData, username: e.target.value})} disabled={isEditing} required placeholder="例如: dealer_a" />
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase">密碼</label>
-                                <input type="text" className="w-full border p-2 rounded" value={formData.password} onChange={e=>setFormData({...formData, password: e.target.value})} required />
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase">顯示名稱</label>
-                                <input type="text" className="w-full border p-2 rounded" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} required placeholder="例如: 台北經銷商" />
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase">ERP 客戶代號 (匯入對應用)</label>
-                                <input type="text" className="w-full border p-2 rounded" value={formData.erp_code} onChange={e=>setFormData({...formData, erp_code: e.target.value})} placeholder="例如: AGM" />
-                                <p className="text-xs text-gray-400 mt-1">需與進貨報表 P 欄完全一致</p>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase">角色</label>
-                                <select className="w-full border p-2 rounded" value={formData.role} onChange={e=>setFormData({...formData, role: e.target.value})}>
-                                    <option value="dealer">經銷商 (Dealer)</option>
-                                    <option value="admin">管理員 (Admin)</option>
-                                </select>
-                            </div>
-                            <div className="pt-4 flex space-x-2">
-                                {isEditing && <button type="button" onClick={() => { setIsEditing(false); setFormData({ username: '', password: '', name: '', erp_code: '', role: 'dealer' }); }} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded">取消</button>}
-                                <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700">{isEditing ? '更新' : '新增'}</button>
+                            <input className="w-full border p-2 rounded" value={formData.username} onChange={e=>setFormData({...formData, username: e.target.value})} disabled={isEditing} required placeholder="帳號" />
+                            <input className="w-full border p-2 rounded" value={formData.password} onChange={e=>setFormData({...formData, password: e.target.value})} required placeholder="密碼" />
+                            <input className="w-full border p-2 rounded" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} required placeholder="名稱" />
+                            <input className="w-full border p-2 rounded" value={formData.erp_code} onChange={e=>setFormData({...formData, erp_code: e.target.value})} placeholder="ERP 代號" />
+                            <select className="w-full border p-2 rounded" value={formData.role} onChange={e=>setFormData({...formData, role: e.target.value})}><option value="dealer">經銷商</option><option value="admin">管理員</option></select>
+                            <div className="flex gap-2">
+                                {isEditing && <button type="button" onClick={()=>{setIsEditing(false);setFormData({username:'',password:'',name:'',erp_code:'',role:'dealer'})}} className="flex-1 border py-2 rounded">取消</button>}
+                                <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded">{isEditing?'更新':'新增'}</button>
                             </div>
                         </form>
                     </div>
@@ -450,723 +374,470 @@
             );
         };
 
-        const ProductRowEdit = ({ data, onChange, onSave, onCancel }) => (
-            <tr className="bg-blue-50">
-                <td className="p-2"><input type="number" className="w-12 border rounded p-1" value={data.sortOrder ?? ''} onChange={e => onChange({...data, sortOrder: parseInt(e.target.value) || 0})} /></td>
-                <td className="p-2 text-xs text-gray-400">Auto</td>
-                <td className="p-2"><input type="text" className="w-16 border rounded p-1" value={data.type || ''} onChange={e => onChange({...data, type: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-20 border rounded p-1" placeholder="內部代號" value={data.internal_code || ''} onChange={e => onChange({...data, internal_code: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-16 border rounded p-1" value={data.model || ''} onChange={e => onChange({...data, model: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-28 border rounded p-1 font-mono" placeholder="P/N (必填)" value={data.pn || ''} onChange={e => onChange({...data, pn: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-24 border rounded p-1" value={data.sap_pn || ''} onChange={e => onChange({...data, sap_pn: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-28 border rounded p-1" value={data.chn_title || ''} onChange={e => onChange({...data, chn_title: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-28 border rounded p-1" value={data.title || ''} onChange={e => onChange({...data, title: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-24 border rounded p-1" value={data.pos_code || ''} onChange={e => onChange({...data, pos_code: e.target.value})} /></td>
-                <td className="p-2"><input type="text" className="w-24 border rounded p-1" placeholder="8D Code" value={data.eight_d_code || ''} onChange={e => onChange({...data, eight_d_code: e.target.value})} /></td>
-                <td className="p-2 flex space-x-2"><button onClick={onSave} className="text-green-600 font-bold"><Save size={16}/></button><button onClick={onCancel} className="text-red-600"><LogOut size={16} className="rotate-180"/></button></td>
-            </tr>
-        );
-
-        const ProductManager = ({ products }) => {
-            const [editingId, setEditingId] = useState(null);
-            const [formData, setFormData] = useState({});
-            const [showImport, setShowImport] = useState(false);
-            const [deleteConfirm, setDeleteConfirm] = useState(false);
-            const [isDeleting, setIsDeleting] = useState(false);
-
-            const handleEdit = (product) => { setEditingId(product.id); setFormData(product); };
-            const handleNew = () => { 
-                setEditingId('new'); 
-                setFormData({ 
-                    pn: '', internal_code: '', sap_pn: '', title: '', chn_title: '', type: 'PS5', model: '', model2: '', pos_code: '', eight_d_code: '', cust_category: '', cust_type: '', sortOrder: products.length + 1, isActive: true 
-                }); 
-            };
-            
-            const handleSave = async () => {
-                if (!formData.pn) return alert("產品編號 (P/N) 必填");
-                try {
-                    const docId = formData.pn.replace(/\//g, '-');
-                    const dataToSave = { ...formData, isActive: formData.isActive !== false }; 
-                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', docId), dataToSave);
-                    setEditingId(null);
-                } catch (e) { alert("儲存失敗: " + e.message); }
-            };
-
-            const handleToggleActive = async (product) => {
-                try {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', product.id);
-                    await setDoc(docRef, { isActive: !product.isActive }, { merge: true });
-                } catch (e) { console.error(e); }
-            };
-
-            const handleDeleteAll = async () => {
-                if (!deleteConfirm) {
-                    setDeleteConfirm(true);
-                    setTimeout(() => setDeleteConfirm(false), 3000);
-                    return;
-                }
-                setIsDeleting(true);
-                setDeleteConfirm(false);
-                try {
-                    const batchSize = 400; 
-                    let batch = writeBatch(db);
-                    let count = 0;
-                    let totalDeleted = 0;
-                    for (const p of products) {
-                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', p.id);
-                        batch.delete(docRef);
-                        count++;
-                        totalDeleted++;
-                        if (count >= batchSize) {
-                            await batch.commit();
-                            batch = writeBatch(db);
-                            count = 0;
-                        }
-                    }
-                    if (count > 0) await batch.commit();
-                    alert(`已成功刪除 ${totalDeleted} 筆產品資料！`);
-                } catch (e) {
-                    console.error(e);
-                    alert('刪除失敗: ' + e.message);
-                } finally {
-                    setIsDeleting(false);
-                }
-            };
-
-            return (
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                    <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                        <h3 className="font-bold flex items-center text-gray-700"><Database className="mr-2" size={20}/> 產品資料庫管理</h3>
-                        <div className="flex space-x-2">
-                            {products.length > 0 && (
-                                <button 
-                                    onClick={handleDeleteAll} 
-                                    disabled={isDeleting}
-                                    className={`px-3 py-1.5 rounded text-sm flex items-center mr-2 border transition-all duration-200
-                                        ${isDeleting 
-                                        ? 'bg-gray-100 text-gray-500 border-gray-300 cursor-wait'
-                                        : deleteConfirm 
-                                            ? 'bg-red-600 text-white border-red-700 hover:bg-red-700 animate-pulse'
-                                            : 'bg-white text-red-600 border-red-200 hover:bg-red-50'
-                                        }`}
-                                >
-                                    {isDeleting ? <><Loader2 size={16} className="mr-1 animate-spin"/> 刪除中...</> : deleteConfirm ? <><AlertTriangle size={16} className="mr-1"/> 確定刪除？(再次點擊)</> : <><Trash2 size={16} className="mr-1"/> [測試用] 清空所有產品</>}
-                                </button>
-                            )}
-                            <button onClick={() => setShowImport(!showImport)} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm flex items-center hover:bg-blue-700"><FileText size={16} className="mr-1"/> {showImport ? '隱藏匯入' : 'Excel 批次匯入'}</button>
-                            <button onClick={handleNew} className="bg-green-600 text-white px-3 py-1.5 rounded text-sm flex items-center hover:bg-green-700"><Plus size={16} className="mr-1"/> 新增產品</button>
-                        </div>
-                    </div>
-                    {showImport && <ProductImportPanel onClose={() => setShowImport(false)} products={products} />}
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-sm text-left">
-                            <thead className="bg-gray-100 text-gray-600 font-medium">
-                                <tr>
-                                    <th className="p-3">#</th>
-                                    <th className="p-3">顯示</th>
-                                    <th className="p-3">Type</th>
-                                    <th className="p-3">內部代號</th>
-                                    <th className="p-3">Model</th>
-                                    <th className="p-3">P/N</th>
-                                    <th className="p-3">SAP P/N</th>
-                                    <th className="p-3">品名 (中文)</th>
-                                    <th className="p-3">品名 (英文)</th>
-                                    <th className="p-3">POS</th>
-                                    <th className="p-3">8D Code</th>
-                                    <th className="p-3">操作</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-100">
-                                {editingId === 'new' && <ProductRowEdit data={formData} onChange={setFormData} onSave={handleSave} onCancel={() => setEditingId(null)} />}
-                                {products.map(p => (editingId === p.id ? <ProductRowEdit key={p.id} data={formData} onChange={setFormData} onSave={handleSave} onCancel={() => setEditingId(null)} /> : 
-                                    <tr key={p.id} className={`hover:bg-gray-50 ${p.isActive === false ? 'bg-gray-100 opacity-60' : ''}`}>
-                                        <td className="p-3 text-gray-500 w-10">{p.sortOrder}</td>
-                                        <td className="p-3">
-                                            <button onClick={() => handleToggleActive(p)} className="text-gray-500 hover:text-blue-600">
-                                                {p.isActive !== false ? <Eye size={16} className="text-green-600"/> : <EyeOff size={16} />}
-                                            </button>
-                                        </td>
-                                        <td className="p-3 w-16"><span className="bg-gray-200 text-xs px-2 py-1 rounded">{p.type}</span></td>
-                                        <td className="p-3 w-20 text-gray-600 font-mono text-xs">{p.internal_code}</td>
-                                        <td className="p-3 w-20 truncate">{p.model}</td>
-                                        <td className="p-3 font-mono font-medium text-blue-600 w-32">{p.pn}</td>
-                                        <td className="p-3 text-gray-500 w-28">{p.sap_pn}</td>
-                                        <td className="p-3 font-medium max-w-[150px] truncate">{p.chn_title}</td>
-                                        <td className="p-3 text-gray-500 max-w-[150px] truncate">{p.title}</td>
-                                        <td className="p-3 text-gray-500 w-24 font-mono text-xs">{p.pos_code}</td>
-                                        <td className="p-3 text-gray-500 w-24 font-mono text-xs">{p.eight_d_code}</td>
-                                        <td className="p-3 w-20"><button onClick={() => handleEdit(p)} className="text-blue-600 hover:underline mr-3">編輯</button></td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            );
-        };
-
-        const ProductImportPanel = ({ onClose, products }) => {
-            const [preview, setPreview] = useState([]);
-            const [fileName, setFileName] = useState('');
-            const [status, setStatus] = useState('');
-            const [debugInfo, setDebugInfo] = useState('');
-            const [encoding, setEncoding] = useState('Big5');
-            const [garbledWarning, setGarbledWarning] = useState(false);
-            const [isProcessing, setIsProcessing] = useState(false);
-
-            const handleFileUpload = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                setFileName(file.name);
-                setStatus(''); 
-                setDebugInfo('');
-                setGarbledWarning(false);
-                const reader = new FileReader();
-                reader.onload = (event) => parseCSV(event.target.result);
-                reader.readAsText(file, encoding);
-            };
-
-            const parseCSV = (text) => {
-                if (text.startsWith("PK")) {
-                    setStatus("❌ 偵測到 Excel (.xlsx) 格式");
-                    setDebugInfo("您上傳的是 .xlsx 檔。請先另存為 CSV 格式。");
-                    return;
-                }
-
-                if (text.includes('') || text.includes('??')) setGarbledWarning(true);
-
-                let content = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
-                const lines = content.split(/\r\n|\n|\r/).filter(l => l.trim().length > 0);
-                
-                if (lines.length < 2) { setStatus('❌ 檔案內容過短'); return; }
-
-                const firstLine = lines[0];
-                let delimiter = ',';
-                if (firstLine.indexOf('\t') !== -1) delimiter = '\t';
-                else if (firstLine.indexOf(';') !== -1) delimiter = ';';
-
-                const result = [];
-                const splitLine = (line) => {
-                    if (delimiter === ',') return line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.trim().replace(/^"|"$/g, ''));
-                    return line.split(delimiter).map(c => c.trim().replace(/^"|"$/g, ''));
-                };
-
-                lines.slice(1).forEach((line, idx) => {
-                    const cols = splitLine(line);
-                    const pn = cols[7]; // H Column (Index 7)
-                    if (!pn) return; 
-
-                    let engTitle = cols[9] || '';
-                    let titleWarning = false;
-                    if (/[?]/.test(engTitle)) {
-                        engTitle = engTitle.replace(/[?]/g, '').trim();
-                        titleWarning = true;
-                    }
-
-                    const existingProduct = products.find(p => p.pn === pn);
-                    const isDuplicate = !!existingProduct;
-
-                    let reasonText = '';
-                    let status = 'ok'; 
-
-                    if (isDuplicate) {
-                        status = 'existing';
-                        reasonText = '⚠️ 已存在 (僅更新排序)';
-                    } else if (titleWarning) {
-                        status = 'warning';
-                        reasonText = '⚠️ 已移除英文亂碼';
-                    } else {
-                        status = 'ok';
-                        reasonText = '新增';
-                    }
-
-                    result.push({
-                        type: cols[4] || '',      
-                        model: cols[5] || '',     
-                        model2: cols[6] || '',    
-                        pn: pn,                   
-                        sap_pn: cols[8] || '',    
-                        title: engTitle,     
-                        chn_title: cols[10] || '',
-                        pos_code: cols[11] || '',
-                        eight_d_code: cols[12] || '', // M Column
-                        cust_category: cols[13] || '', // N Column
-                        cust_type: cols[14] || '',     // O Column
-                        sortOrder: idx + 1,
-                        status: status,
-                        reason: reasonText,
-                        isActive: true 
-                    });
-                });
-
-                if (result.length === 0) {
-                    setStatus(`⚠️ 讀取到 0 筆資料。`);
-                } else {
-                    const newCount = result.filter(r => r.status === 'ok' || r.status === 'warning').length;
-                    const existCount = result.filter(r => r.status === 'existing').length;
-                    setPreview(result);
-                    setStatus(`✅ 解析 ${result.length} 筆資料 (新增: ${newCount}, 更新排序: ${existCount})`);
-                }
-            };
-
-            const handleImport = async () => {
-                if (preview.length === 0) return;
-                setIsProcessing(true);
-
-                const batch = writeBatch(db);
-                const importedPNs = new Set();
-
-                preview.forEach(p => {
-                    importedPNs.add(p.pn);
-                    const docId = p.pn.replace(/\//g, '-');
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', docId);
-                    
-                    if (p.status === 'existing') {
-                        batch.update(docRef, { sortOrder: p.sortOrder, isActive: true });
-                    } else {
-                        const { status, reason, ...productData } = p;
-                        batch.set(docRef, productData);
-                    }
-                });
-
-                let hiddenCount = 0;
-                products.forEach(p => {
-                    if (!importedPNs.has(p.pn) && p.isActive !== false) {
-                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', p.id);
-                        batch.update(docRef, { isActive: false });
-                        hiddenCount++;
-                    }
-                });
-                
-                try { 
-                    await batch.commit(); 
-                    const newCount = preview.filter(r => r.status !== 'existing').length;
-                    alert(`匯入完成！\n\n- 成功新增: ${newCount} 筆\n- 更新排序: ${preview.length - newCount} 筆\n- 自動隱藏舊品: ${hiddenCount} 筆 (未在表中)`); 
-                    onClose(); 
-                } catch (e) { 
-                    console.error(e);
-                    alert("匯入失敗: " + e.message); 
-                } finally {
-                    setIsProcessing(false);
-                }
-            };
-
-            return (
-                <div className="bg-gray-50 border-b p-4">
-                    <h4 className="font-bold text-gray-700 mb-2">Excel 產品資料批次匯入 (同步模式)</h4>
-                    <div className="text-xs text-gray-500 mb-2">
-                        <p>1. 系統將依照此 Excel 順序重新排列所有產品。</p>
-                        <p>2. 資料庫已有的 P/N 不會被覆蓋，僅更新排序。</p>
-                        <p>3. 未出現在此 Excel 的舊產品將自動隱藏。</p>
-                        <p>4. 系統會自動抓取 8D Code (M欄) 等額外資訊。</p>
-                    </div>
-                    
-                    {garbledWarning && (
-                        <div className="mb-2 p-2 bg-yellow-100 border border-yellow-400 text-yellow-800 rounded text-sm flex items-center">
-                            <RefreshCw className="mr-2" size={16}/> ⚠️ 偵測到亂碼，請切換下方「檔案編碼」重試。
-                        </div>
-                    )}
-
-                    <div className="flex items-center space-x-4 mb-2">
-                        <select value={encoding} onChange={(e) => setEncoding(e.target.value)} className="border rounded p-1 text-sm bg-white"><option value="Big5">Big5 (繁體中文)</option><option value="UTF-8">UTF-8</option></select>
-                        <input type="file" accept=".csv" key={encoding} onChange={handleFileUpload} className="text-sm" />
-                    </div>
-                    {status && <p className={`text-sm font-bold mb-2 ${status.includes('❌') ? 'text-red-600' : 'text-blue-600'}`}>{status}</p>}
-                    {debugInfo && <div className="p-2 bg-red-50 text-red-700 text-xs font-mono whitespace-pre-wrap border border-red-200 mb-2">{debugInfo}</div>}
-                    
-                    <div className="border rounded h-60 overflow-auto bg-white">
-                        <table className="w-full text-xs text-left">
-                            <thead className="bg-gray-100 sticky top-0">
-                                <tr>
-                                    <th className="p-2 w-8">狀態</th>
-                                    <th className="p-2">P/N</th>
-                                    <th className="p-2">中文品名</th>
-                                    <th className="p-2">英文品名</th>
-                                    <th className="p-2">說明</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {preview.map((p, i) => (
-                                    <tr key={i} className={`border-b ${p.status === 'existing' ? 'bg-yellow-50' : p.status === 'warning' ? 'bg-orange-50' : 'hover:bg-gray-50'}`}>
-                                        <td className="p-2">
-                                            {p.status === 'existing' ? <AlertCircle size={16} className="text-yellow-600" /> : 
-                                            p.status === 'warning' ? <AlertTriangle size={16} className="text-orange-500" /> :
-                                            <CheckCircle size={16} className="text-green-500" />}
-                                        </td>
-                                        <td className={`p-2 font-bold ${p.status === 'existing' ? 'text-gray-600' : 'text-blue-600'}`}>{p.pn}</td>
-                                        <td className="p-2">{p.chn_title}</td>
-                                        <td className="p-2 text-xs text-gray-500">{p.title}</td>
-                                        <td className="p-2 text-gray-500">{p.reason}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                    <div className="mt-4 flex justify-end">
-                        <button 
-                            onClick={handleImport} 
-                            className={`px-6 py-2 rounded font-bold text-white transition-colors flex items-center ${preview.length > 0 && !isProcessing ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed'}`}
-                            disabled={preview.length === 0 || isProcessing}
-                        >
-                            {isProcessing ? <><Loader2 className="animate-spin mr-2" size={16}/>處理中...</> : '確認匯入並同步排序'}
-                        </button>
-                    </div>
-                </div>
-            );
-        };
-
         const ImportManager = ({ weekStr, products, accounts }) => {
             const [parsedPreview, setParsedPreview] = useState([]);
-            const [status, setStatus] = useState('');
             const [encoding, setEncoding] = useState('Big5');
-            const [debugInfo, setDebugInfo] = useState('');
-            const [garbledWarning, setGarbledWarning] = useState(false);
+            const [msgModal, setMsgModal] = useState(null);
+            const [modalConfig, setModalConfig] = useState(null);
+            const [status, setStatus] = useState('');
+            const [debugDealerId, setDebugDealerId] = useState('');
 
+            // Mappings
             const erpMap = useMemo(() => {
                 const map = {};
-                accounts.forEach(acc => {
-                    if (acc.erp_code) map[acc.erp_code.trim()] = acc.username;
-                });
+                accounts.forEach(acc => { if (acc.erp_code) map[cleanKey(acc.erp_code)] = acc.username; });
                 return map;
             }, [accounts]);
 
-            const handleFileUpload = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                setStatus('');
-                setDebugInfo('');
-                setGarbledWarning(false);
-                const reader = new FileReader();
-                reader.onload = (event) => parseCSV(event.target.result);
-                reader.readAsText(file, encoding);
-            };
+            // KEY CHANGE: Map Internal Code -> Product ID (which is also Internal Code)
+            const internalCodeMap = useMemo(() => {
+                const map = {};
+                products.forEach(p => {
+                    // Map Internal Code (A Col) to Product Object
+                    if(p.internal_code) map[cleanKey(p.internal_code)] = p;
+                });
+                return map;
+            }, [products]);
 
             const parseCSV = (text) => {
-                if (text.startsWith("PK")) {
-                    setStatus("❌ 偵測到 Excel (.xlsx) 格式");
-                    setDebugInfo("您上傳的是 .xlsx 檔。請先另存為 CSV 格式。");
-                    return;
-                }
-                if (text.includes('')) setGarbledWarning(true);
-
-                let content = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
-                const lines = content.split(/\r\n|\n|\r/).filter(l => l.trim().length > 0);
-                
-                const firstLine = lines[0] || "";
-                let delimiter = ',';
-                if (firstLine.indexOf('\t') !== -1) delimiter = '\t';
-                else if (firstLine.indexOf(';') !== -1) delimiter = ';';
-
-                const splitLine = (line) => {
-                    if (delimiter === ',') return line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.trim().replace(/^"|"$/g, ''));
-                    return line.split(delimiter).map(c => c.trim().replace(/^"|"$/g, ''));
-                };
-
-                const idxPN = 7;       // H column
-                const idxCustomer = 15; // P column
-                const idxIN = 17;      // R column
-
+                const lines = text.split(/\r\n|\n/).filter(l=>l.trim());
+                const delimiter = lines[0].includes('\t') ? '\t' : ',';
                 const result = [];
-                let unmatchedDealers = new Set();
+                let unmatched = [];
                 
-                for (let i = 1; i < lines.length; i++) {
-                    const line = lines[i];
-                    const cols = splitLine(line);
-                    
-                    const custErpCode = cols[idxCustomer]; 
-                    const prodId = cols[idxPN];
-                    const inVal = parseFloat(cols[idxIN]) || 0;
+                // 111111111.xlsx Structure:
+                // Col 3 (D) = Customer Code
+                // Col 8 (I) = Product Code (matches Internal Code A in WSR)
+                // Col 12 (M) = Qty
+                
+                for(let i=1; i<lines.length; i++) {
+                    const cols = lines[i].split(delimiter).map(s=>s.trim().replace(/^"|"$/g, ''));
+                    const custCode = cleanKey(cols[3]); // D
+                    const prodCode = cleanKey(cols[8]); // I (Internal)
+                    const qty = parseFloat(cols[12]) || 0; // M
 
-                    if (custErpCode && prodId && inVal > 0) {
-                        const dealerId = erpMap[custErpCode.trim()];
-                        const product = products.find(p => p.pn === prodId);
-
-                        if (dealerId) {
-                            result.push({
-                                dealerId: dealerId, 
-                                dealerName: custErpCode, 
-                                pn: prodId,
-                                productName: product ? product.chn_title : '(未建檔)',
-                                qty: inVal
-                            });
+                    if(custCode && prodCode && qty > 0) {
+                        const dealerId = erpMap[custCode];
+                        const product = internalCodeMap[prodCode]; // Lookup by Internal Code
+                        
+                        if(dealerId && product) {
+                            // Use product.id (which is generated from Internal Code) as the DB Key
+                            result.push({ dealerId, productKey: product.id, qty, dealerName: custCode, prodName: product.chn_title, prodCode });
                         } else {
-                            unmatchedDealers.add(custErpCode);
+                            if (!dealerId) unmatched.push(`未知的客戶代號: ${custCode}`);
+                            if (!product) unmatched.push(`未知的產品代號(料號): ${prodCode}`);
                         }
                     }
                 }
-                
-                if (result.length === 0) {
-                    setStatus(`⚠️ 讀取完成，但沒有發現有效進貨紀錄。`);
-                    if (unmatchedDealers.size > 0) {
-                        setDebugInfo(`發現以下客戶代號無法對應到系統帳號：\n${Array.from(unmatchedDealers).join(', ')}\n\n請至「帳號管理」設定對應的 ERP 代號。`);
-                    }
-                } else {
-                    setParsedPreview(result);
-                    let msg = `✅ 讀取成功。共 ${result.length} 筆有效進貨。`;
-                    if (unmatchedDealers.size > 0) msg += ` (另有 ${unmatchedDealers.size} 個客戶代號未建檔)`;
-                    setStatus(msg);
+                setParsedPreview(result);
+                setStatus(`✅ 解析完成：${result.length} 筆有效資料 (已對應至產品ID)`);
+                if(unmatched.length > 0) setMsgModal({title: '部分資料無法對應', message: Array.from(new Set(unmatched)).join('\n'), type: 'error'});
+            };
+
+            const handleFile = (e) => {
+                const f = e.target.files[0];
+                if(f) {
+                    const r = new FileReader();
+                    r.onload = ev => parseCSV(ev.target.result);
+                    r.readAsText(f, encoding);
                 }
             };
 
-            const handleImport = async () => {
-                if (parsedPreview.length === 0) return;
-                setStatus('匯入中...');
+            const doImport = async () => {
                 const batch = writeBatch(db);
-                const dealerUpdates = {}; 
-                
-                parsedPreview.forEach(item => {
-                    if (!dealerUpdates[item.dealerId]) dealerUpdates[item.dealerId] = {};
-                    dealerUpdates[item.dealerId][item.pn] = (dealerUpdates[item.dealerId][item.pn] || 0) + item.qty;
+                const updates = {};
+                parsedPreview.forEach(p => {
+                    if(!updates[p.dealerId]) updates[p.dealerId] = {};
+                    updates[p.dealerId][p.productKey] = (updates[p.dealerId][p.productKey] || 0) + p.qty;
                 });
 
-                for (const dId in dealerUpdates) {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${dId}`);
-                    const updates = {};
-                    for (const pn in dealerUpdates[dId]) {
-                        updates[`items.${pn.replace(/\./g, '_')}.in`] = dealerUpdates[dId][pn]; 
+                for(const dId in updates) {
+                    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${dId}`);
+                    const payload = { dealerId: dId, week: weekStr, updatedAt: new Date().toISOString() };
+                    for(const pKey in updates[dId]) {
+                        payload[`items.${pKey}.in`] = updates[dId][pKey];
                     }
-                    batch.set(docRef, updates, { merge: true });
+                    batch.set(ref, payload, { merge: true });
                 }
-                try { await batch.commit(); setStatus('✅ 匯入成功！'); setParsedPreview([]); } catch (e) { console.error(e); setStatus('❌ 匯入失敗: ' + e.message); }
+                await batch.commit();
+                setMsgModal({title: '成功', message: `成功匯入 ${parsedPreview.length} 筆資料到週次 [${weekStr}]`, type: 'success'});
+            };
+
+            const clearWeekData = async () => {
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'weekly_reports'), where('week', '==', weekStr));
+                const snaps = await getDocs(q);
+                const batch = writeBatch(db);
+                let count = 0;
+                snaps.forEach(snap => {
+                    const d = snap.data();
+                    if(!d.items) return;
+                    const up = {};
+                    Object.keys(d.items).forEach(k => { if(d.items[k].in !== 0) up[`items.${k}.in`] = 0; });
+                    if(Object.keys(up).length > 0) { batch.update(snap.ref, up); count++; }
+                });
+                await batch.commit();
+                setMsgModal({ title: '已清空', message: `已重置 ${count} 位經銷商的本週進貨數據。`, type: 'success' });
+            };
+
+            const checkDB = async () => {
+                if(!debugDealerId) return alert('請輸入經銷商代號');
+                const ref = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${debugDealerId}`);
+                const snap = await getDoc(ref);
+                if(!snap.exists()) {
+                    setMsgModal({title: '查無資料', message: `週次 [${weekStr}] 經銷商 [${debugDealerId}] 沒有任何報表文件。`, type: 'error'});
+                } else {
+                    const data = snap.data();
+                    const items = data.items || {};
+                    const content = Object.keys(items)
+                        .filter(k => items[k].in > 0)
+                        .map(k => `Key(料號): ${k} => IN: ${items[k].in}`)
+                        .join('\n');
+                    setMsgModal({title: '資料庫原始內容', message: content || '該經銷商本週沒有進貨數據 (IN=0)', type: 'info'});
+                }
             };
 
             return (
-                <div className="bg-white rounded-lg shadow p-6">
-                    <h3 className="text-lg font-bold mb-4 flex items-center"><Upload className="mr-2" /> 本週進貨匯入 ({weekStr})</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">1. 上傳 Excel 原始檔 (CSV 格式)</label>
-                            <div className="flex items-center space-x-4 mb-2">
-                                <select value={encoding} onChange={(e) => setEncoding(e.target.value)} className="border rounded p-1 text-sm bg-gray-50"><option value="Big5">Big5 (繁體中文)</option><option value="UTF-8">UTF-8</option></select>
+                <div className="bg-white p-6 rounded-lg shadow">
+                    {msgModal && <MessageModal {...msgModal} onClose={()=>setMsgModal(null)} />}
+                    {modalConfig && <ConfirmModal {...modalConfig} onCancel={()=>setModalConfig(null)} />}
+                    <h3 className="font-bold text-lg mb-4 flex items-center"><Upload className="mr-2"/> 進貨匯入 ({weekStr})</h3>
+                    
+                    <div className="flex gap-4 mb-4">
+                         <div className="flex-1">
+                            <label className="block text-sm font-medium mb-1">1. 上傳 CSV (銷貨單)</label>
+                            <div className="flex gap-2">
+                                <select value={encoding} onChange={e=>setEncoding(e.target.value)} className="border rounded p-2"><option value="Big5">Big5</option><option value="UTF-8">UTF-8</option></select>
+                                <input type="file" onChange={handleFile} className="border p-1 rounded flex-1" />
                             </div>
-                            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center bg-white relative">
-                                <input type="file" accept=".csv" key={encoding} onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
-                                <div className="flex flex-col items-center"><FileUp className="text-gray-400 mb-2" size={32} /><span className="text-sm text-gray-600">點擊上傳</span></div>
-                            </div>
-                            {status && <p className={`mt-2 text-sm font-bold ${status.includes('❌') || status.includes('⚠️') ? 'text-red-600' : 'text-gray-600'}`}>{status}</p>}
-                            {debugInfo && <div className="p-2 bg-red-50 text-red-700 text-xs font-mono whitespace-pre-wrap border border-red-200 mt-2">{debugInfo}</div>}
+                            <div className="mt-2 text-sm text-blue-600">{status}</div>
+                         </div>
+                         <div className="flex-1 flex flex-col justify-end gap-2">
+                            <button onClick={()=>setModalConfig({title:'清空確認', message:'確定清空本週所有進貨數據？', confirmColor:'red', onConfirm:()=>{setModalConfig(null); clearWeekData();}})} className="bg-red-100 text-red-600 p-2 rounded flex items-center justify-center hover:bg-red-200"><Eraser size={16} className="mr-2"/> 🔴 強制清空本週進貨</button>
+                            <button onClick={doImport} disabled={parsedPreview.length===0} className="bg-blue-600 text-white p-2 rounded hover:bg-blue-700 disabled:opacity-50">確認寫入資料庫</button>
+                         </div>
+                    </div>
+
+                    <div className="border-t pt-4 mt-4">
+                        <label className="block text-sm font-bold mb-2 flex items-center"><Terminal size={16} className="mr-2"/> 🔍 檢查資料庫原始內容 (Debug 用)</label>
+                        <div className="flex gap-2">
+                            <input className="border p-2 rounded flex-1" placeholder="輸入經銷商帳號 (例如: M25057155)" value={debugDealerId} onChange={e=>setDebugDealerId(e.target.value)} />
+                            <button onClick={checkDB} className="bg-gray-800 text-white px-4 py-2 rounded hover:bg-gray-700">檢查</button>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">2. 預覽匯入內容 (自動對應帳號)</label>
-                            <div className="border rounded h-64 overflow-y-auto bg-gray-50 p-2">
-                                <table className="w-full text-sm">
-                                <thead className="bg-gray-200 sticky top-0"><tr><th className="p-1">帳號 (ERP)</th><th className="p-1">P/N (H欄)</th><th className="p-1 text-right">IN (R欄)</th></tr></thead>
+                    </div>
+                    
+                    {parsedPreview.length > 0 && (
+                        <div className="mb-4 h-40 overflow-auto border rounded bg-gray-50 p-2 text-sm">
+                            <table className="w-full">
+                                <thead><tr><th className="text-left">經銷商</th><th className="text-left">產品代號 (I欄) -> Key(料號)</th><th className="text-right">數量</th></tr></thead>
                                 <tbody>
-                                    {parsedPreview.map((row, i) => (
-                                    <tr key={i} className="border-b bg-white">
-                                        <td className="p-1 font-bold text-blue-600">{row.dealerId} <span className="text-gray-400 font-normal">({row.dealerName})</span></td>
-                                        <td className="p-1 text-xs">{row.pn}<br/>{row.productName}</td>
-                                        <td className="p-1 text-right font-bold text-green-600">{row.qty}</td>
-                                    </tr>
+                                    {parsedPreview.map((p,i) => (
+                                        <tr key={i} className="border-b">
+                                            <td>{p.dealerName}</td>
+                                            <td>{p.prodCode} -> <span className="font-bold text-blue-600">{p.productKey}</span><br/><span className="text-gray-500 text-xs">{p.prodName}</span></td>
+                                            <td className="text-right font-bold text-green-600">{p.qty}</td>
+                                        </tr>
                                     ))}
                                 </tbody>
-                                </table>
-                            </div>
-                            <button onClick={handleImport} disabled={parsedPreview.length === 0} className={`mt-2 w-full py-2 rounded font-bold ${parsedPreview.length > 0 ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-500'}`}>確認寫入</button>
+                            </table>
                         </div>
+                    )}
+                </div>
+            );
+        };
+
+        const ProductImportPanel = ({ onClose }) => {
+            const [encoding, setEncoding] = useState('Big5');
+
+            const handleFile = (e) => {
+                const f = e.target.files[0];
+                if(f) {
+                    const r = new FileReader();
+                    r.onload = ev => parse(ev.target.result);
+                    r.readAsText(f, encoding);
+                }
+            };
+
+            const parse = async (txt) => {
+                const lines = txt.split(/\r\n|\n/).filter(l=>l.trim());
+                const delimiter = lines[0].includes('\t') ? '\t' : ',';
+                const batch = writeBatch(db);
+                let count = 0;
+
+                // WSR.csv: 
+                // Col 0 (A) = Internal Code (C20...) -> MAIN KEY
+                // Col 8 (I) = P/N (CFI...)
+                // Col 9 (J) = SAP P/N
+                // Col 12 (M) = POS
+                lines.slice(1).forEach((l, idx) => {
+                    const c = l.split(delimiter).map(s => s.trim().replace(/^"|"$/g, ''));
+                    const internal = cleanStr(c[0]);
+                    const pn = cleanStr(c[8]);
+                    const sap = cleanStr(c[9]);
+                    const pos = cleanStr(c[12]);
+                    
+                    // KEY LOGIC: Internal Code ONLY. Fallback to PN if missing.
+                    const docId = generateProductKey(internal, pos, pn);
+
+                    if(docId !== 'UNKNOWN_KEY') {
+                        const data = {
+                            id: docId,
+                            internal_code: internal,
+                            pn: pn,
+                            sap_pn: sap,
+                            pos_code: pos,
+                            chn_title: cleanStr(c[11]),
+                            title: cleanStr(c[10]),
+                            sortOrder: idx+1,
+                            isActive: true
+                        };
+                        batch.set(doc(db, 'artifacts', appId, 'public', 'data', 'products', docId), data);
+                        count++;
+                    }
+                });
+                await batch.commit();
+                alert(`匯入完成！建立 ${count} 筆產品。KEY 統一為：料號 (Internal Code)`);
+                onClose();
+            };
+
+            return (
+                <div className="bg-gray-50 p-4 mb-4 rounded border">
+                    <h4 className="font-bold mb-2">產品資料匯入 (Key = 料號)</h4>
+                    <div className="flex gap-2">
+                        <select value={encoding} onChange={e=>setEncoding(e.target.value)} className="border rounded"><option value="Big5">Big5</option><option value="UTF-8">UTF-8</option></select>
+                        <input type="file" onChange={handleFile} />
+                    </div>
+                </div>
+            );
+        };
+
+        const ProductManager = ({ products }) => {
+            const [viewMode, setViewMode] = useState('list');
+            return (
+                <div>
+                    {viewMode === 'import' && <ProductImportPanel onClose={()=>setViewMode('list')} />}
+                    <div className="bg-white p-4 rounded shadow mb-4 flex justify-between items-center">
+                        <h3 className="font-bold">產品資料庫 ({products.length})</h3>
+                        <button onClick={()=>setViewMode('import')} className="bg-blue-600 text-white px-3 py-1 rounded">Excel 匯入</button>
+                    </div>
+                    <div className="bg-white rounded shadow overflow-auto h-[600px]">
+                        <table className="w-full text-sm text-left">
+                            <thead className="bg-gray-100 sticky top-0"><tr><th className="p-2">料號 (Key)</th><th className="p-2">P/N</th><th className="p-2">品名</th><th className="p-2">POS</th></tr></thead>
+                            <tbody>
+                                {products.map(p => (
+                                    <tr key={p.id} className="border-b">
+                                        <td className="p-2 text-blue-600 font-bold">{p.id}</td>
+                                        <td className="p-2">{p.pn}</td>
+                                        <td className="p-2">{p.chn_title}</td>
+                                        <td className="p-2">{p.pos_code}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             );
         };
 
         const WeeklyReport = ({ user, weekStr, products, year, week, dealers, isAdmin }) => {
-            const [reportData, setReportData] = useState({}); 
-            const [prevWeekStock, setPrevWeekStock] = useState({});
-            // If admin, default to first dealer, else self
-            const [targetDealer, setTargetDealer] = useState(isAdmin ? (dealers[0]?.username || '') : user.uid);
-            const [saving, setSaving] = useState(false);
-
-            // Filter Active Products
-            const activeProducts = useMemo(() => products.filter(p => p.isActive !== false), [products]);
-
-            // Update target dealer if dealers list changes and current target is invalid (for admin)
-            useEffect(() => {
-                if (isAdmin && dealers.length > 0 && !dealers.find(d => d.username === targetDealer)) {
-                setTargetDealer(dealers[0].username);
-                }
-            }, [dealers, isAdmin, targetDealer]);
+            const [report, setReport] = useState({});
+            const [targetDealer, setTargetDealer] = useState(isAdmin ? '' : user.uid);
+            const [snapshotError, setSnapshotError] = useState(null);
+            
+            // --- NEW: Raw Data Debug State ---
+            const [docExists, setDocExists] = useState(false);
+            const [rawData, setRawData] = useState(null);
+            // ---------------------------------
 
             useEffect(() => {
-                if (!targetDealer) return;
-                let py = year, pw = week - 1;
-                if (pw < 1) { py--; pw = 52; }
-                const prevWeekStr = getWeekString(py, pw);
-                const fetchPrev = async () => {
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${prevWeekStr}_${targetDealer}`);
-                const snap = await getDoc(docRef);
-                if (snap.exists()) {
-                    const data = snap.data().items || {};
-                    const stocks = {};
-                    Object.keys(data).forEach(k => { stocks[k.replace(/_/g, '.')] = data[k].stock || 0; });
-                    setPrevWeekStock(stocks);
-                } else { setPrevWeekStock({}); }
-                };
-                fetchPrev();
-            }, [week, year, targetDealer]);
+                if(isAdmin && dealers.length > 0 && !targetDealer) setTargetDealer(dealers[0].username);
+            }, [dealers, isAdmin]);
 
             useEffect(() => {
-                if (!targetDealer) return;
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${targetDealer}`);
-                const unsubscribe = onSnapshot(docRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    const rawItems = docSnap.data().items || {};
-                    const items = {};
-                    Object.keys(rawItems).forEach(k => { items[k.replace(/_/g, '.')] = rawItems[k]; });
-                    setReportData(items);
-                } else { setReportData({}); }
-                });
-                return () => unsubscribe();
+                if(!targetDealer) return;
+                setSnapshotError(null);
+                setReport({}); 
+                setRawData(null); // Reset raw data
+                setDocExists(false);
+                
+                const unsub = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${targetDealer}`), 
+                    (snap) => {
+                        setDocExists(snap.exists());
+                        if (snap.exists()) {
+                            const data = snap.data();
+                            setRawData(data); // Store Raw Data for Debugging
+                            
+                            // *** CRITICAL FIX: Normalize Data Structure ***
+                            const normalizedItems = normalizeReportData(data);
+                            setReport(normalizedItems);
+                        } else {
+                            setReport({});
+                            setRawData(null);
+                        }
+                    },
+                    (err) => {
+                        console.error("Snapshot Error:", err);
+                        setSnapshotError(err.message);
+                    }
+                );
+                return () => unsub();
             }, [weekStr, targetDealer]);
 
-            const getRowData = (pn) => {
-                const prevStock = prevWeekStock[pn] || 0;
-                const currentEntry = reportData[pn] || {};
-                const inbound = currentEntry.in || 0;
-                const outbound = currentEntry.out || 0;
-                const stock = prevStock + inbound - outbound;
-                return { bs: prevStock, in: inbound, out: outbound, stock };
+            const ghostData = useMemo(() => {
+                const productKeys = new Set(products.map(p => p.id));
+                return Object.keys(report).filter(k => (report[k].in > 0 || report[k].stock > 0) && !productKeys.has(k));
+            }, [report, products]);
+
+            const updateVal = async (key, field, val) => {
+                const ref = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${targetDealer}`);
+                const payload = { dealerId: targetDealer, week: weekStr, [`items.${key}.${field}`]: parseFloat(val)||0 };
+                await setDoc(ref, payload, { merge: true });
             };
 
-            const handleOutChange = async (pn, val) => {
-                const safeKey = pn.replace(/\./g, '_');
-                const newVal = parseInt(val) || 0;
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${targetDealer}`);
-                const row = getRowData(pn);
-                const newStock = row.bs + row.in - newVal;
-                const updatePayload = {
-                [`items.${safeKey}.out`]: newVal,
-                [`items.${safeKey}.stock`]: newStock,
-                [`items.${safeKey}.bs`]: row.bs,
-                dealerId: targetDealer,
-                week: weekStr,
-                updatedAt: new Date().toISOString()
-                };
-                setSaving(true);
-                await setDoc(docRef, updatePayload, { merge: true });
-                setSaving(false);
-            };
+            const dbPath = `artifacts/${appId}/public/data/weekly_reports/report_${weekStr}_${targetDealer}`;
+            const currentUser = getAuth(initializeApp(firebaseConfig)).currentUser;
 
-            if (isAdmin && dealers.length === 0) {
-                return <div className="p-8 text-center text-gray-500">尚無經銷商帳號，請先至「帳號管理」新增。</div>;
-            }
+            if(products.length === 0) return <div className="p-8 text-center">請先匯入產品資料庫</div>;
 
             return (
-                <div className="bg-white rounded-lg shadow border border-gray-200 flex flex-col h-[calc(100vh-200px)]">
-                <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 flex-none">
-                    <div className="flex items-center space-x-4">
-                    <h2 className="font-bold text-lg text-gray-800">{isAdmin ? '經銷商填報檢視' : '本週報表填寫'}</h2>
+                <div className="bg-white rounded shadow flex flex-col h-[calc(100vh-200px)]">
+                    {/* Add Debug Section for Admin */}
                     {isAdmin && (
-                        <select 
-                        value={targetDealer} 
-                        onChange={(e) => setTargetDealer(e.target.value)}
-                        className="border border-gray-300 rounded px-2 py-1 text-sm"
-                        >
-                        {dealers.map(d => <option key={d.username} value={d.username}>{d.name} ({d.username})</option>)}
-                        </select>
+                         <div className="bg-gray-100 p-2 text-xs border-b border-gray-300 font-mono text-gray-600 break-all">
+                            <span className="font-bold text-red-600">[DEBUG]</span> <br/>
+                            <span className="font-bold">Firebase Auth:</span> {currentUser ? `Signed In (${currentUser.isAnonymous ? 'Anon' : 'User'})` : <span className="text-red-600 font-bold bg-yellow-200 px-1">No (Anonymous/Null) - Check Console</span>} <br/>
+                            <span className="font-bold">Path:</span> {dbPath} <br/>
+                            <span className="font-bold">Doc Exists:</span> {docExists ? <span className="text-green-600 font-bold">YES</span> : <span className="text-red-600 font-bold">NO</span>} <br/>
+                            <span className="font-bold">Items Count:</span> {Object.keys(report).length} <br/>
+                            <div className="mt-1 p-1 bg-gray-200 rounded max-h-20 overflow-auto">
+                                <span className="font-bold">Raw Content:</span> {rawData ? JSON.stringify(rawData) : 'null'}
+                            </div>
+                         </div>
                     )}
+
+                    <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                        <div className="flex items-center gap-2">
+                            <h2 className="font-bold text-lg">週報表填寫</h2>
+                            {isAdmin && <select value={targetDealer} onChange={e=>setTargetDealer(e.target.value)} className="border rounded p-1">{dealers.map(d=><option key={d.username} value={d.username}>{d.name}</option>)}</select>}
+                        </div>
                     </div>
-                    <div className="flex items-center space-x-2 text-sm text-gray-500">{saving ? <span className="text-blue-500 animate-pulse">儲存中...</span> : <span>所有變更已儲存</span>}</div>
-                </div>
-                <div className="overflow-auto flex-1 p-0">
-                    <table className="w-full text-sm text-left border-collapse">
-                    <thead className="bg-gray-100 text-gray-600 font-medium sticky top-0 z-10 shadow-sm">
-                        <tr><th className="p-3 w-32">P/N</th><th className="p-3">產品名稱</th><th className="p-3 w-24 text-right bg-blue-50">B/S (期初)</th><th className="p-3 w-24 text-right bg-green-50">IN (進貨)</th><th className="p-3 w-24 text-right bg-yellow-50">OUT (銷售)</th><th className="p-3 w-24 text-right bg-gray-100">STOCK (庫存)</th></tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                        {activeProducts.map((p, idx) => {
-                        const row = getRowData(p.pn);
-                        return (
-                            <tr key={p.id} className="hover:bg-gray-50">
-                            <td className="p-3 font-mono text-blue-800">{String(p.pn)}</td>
-                            <td className="p-3 font-medium text-gray-700"><div>{String(p.chn_title)}</div><div className="text-xs text-gray-400">{String(p.title)}</div></td>
-                            <td className="p-3 text-right bg-blue-50/50 font-mono text-gray-600">{row.bs}</td>
-                            <td className="p-3 text-right bg-green-50/50 font-mono text-green-700 font-bold">{row.in > 0 ? `+${row.in}` : '-'}</td>
-                            <td className="p-3 text-right bg-yellow-50/50"><input type="number" min="0" className="w-20 text-right border border-yellow-300 rounded px-1 py-1" value={reportData[p.pn]?.out === undefined ? '' : reportData[p.pn].out} placeholder="0" onChange={(e) => handleOutChange(p.pn, e.target.value)} /></td>
-                            <td className={`p-3 text-right bg-gray-100/50 font-mono font-bold ${row.stock < 0 ? 'text-red-600' : 'text-gray-800'}`}>{row.stock}</td>
-                            </tr>
-                        );
-                        })}
-                    </tbody>
-                    </table>
-                </div>
+                    {ghostData.length > 0 && (
+                        <div className="bg-yellow-100 p-2 text-xs text-yellow-800">
+                            <div className="font-bold flex items-center"><AlertCircle size={14} className="mr-1"/> 發現幽靈數據 (Key 不匹配):</div>
+                            {ghostData.map(k => <span key={k} className="mr-2">{k}: IN={report[k].in}</span>)}
+                        </div>
+                    )}
+                    <div className="overflow-auto flex-1">
+                        <table className="w-full text-sm text-left border-collapse">
+                            <thead className="bg-gray-100 sticky top-0 shadow-sm">
+                                <tr>
+                                    <th className="p-2 border-r w-28">料號 (Key)</th>
+                                    <th className="p-2 border-r w-28">POS</th>
+                                    <th className="p-2 border-r w-32">P/N</th>
+                                    <th className="p-2 min-w-[200px]">產品名稱</th>
+                                    <th className="p-2 w-20 text-right bg-green-50">IN</th>
+                                    <th className="p-2 w-20 text-right bg-yellow-50">OUT</th>
+                                    <th className="p-2 w-20 text-right bg-gray-100">STOCK</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {products.map(p => {
+                                    const r = report[p.id] || {};
+                                    return (
+                                        <tr key={p.id} className="hover:bg-gray-50 border-b">
+                                            <td className="p-2 border-r font-mono text-blue-700 text-xs">{p.id}</td>
+                                            <td className="p-2 border-r font-mono text-xs">{p.pos_code}</td>
+                                            <td className="p-2 border-r font-mono text-xs">{p.pn}</td>
+                                            <td className="p-2 text-xs">{p.chn_title}</td>
+                                            <td className={`p-2 text-right bg-green-50 font-mono ${r.in>0?'text-green-700 font-bold':''}`}>{r.in||'-'}</td>
+                                            <td className="p-2 bg-yellow-50"><input type="number" className="w-full text-right bg-transparent" placeholder="0" value={r.out||''} onChange={e=>updateVal(p.id, 'out', e.target.value)} /></td>
+                                            <td className="p-2 text-right bg-gray-100 font-mono">{((r.bs||0) + (r.in||0) - (r.out||0))}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             );
         };
 
-        const AggregateReport = ({ weekStr, products, dealers, year, week }) => {
-            const [data, setData] = useState({});
-            
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [week, setWeek] = useState(getWeekNumber(INITIAL_DATE));
+            const [products, setProducts] = useState([]);
+            const [accounts, setAccounts] = useState([]);
+            const [view, setView] = useState('report');
+            const [firebaseReady, setFirebaseReady] = useState(false);
+            const weekStr = getWeekString(week.year, week.week);
+
+            // 1. Initial Auth Check (Standard for this Environment)
             useEffect(() => {
-                const fetchData = async () => {
-                    const newData = {};
-                    for (const d of dealers) {
-                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${d.username}`);
-                        const snap = await getDoc(docRef);
-                        if (snap.exists()) {
-                        const rawItems = snap.data().items || {};
-                        const items = {};
-                        Object.keys(rawItems).forEach(k => { items[k.replace(/_/g, '.')] = rawItems[k]; });
-                        newData[d.username] = items;
-                        } else { newData[d.username] = {}; }
+                const initAuth = async () => {
+                    try {
+                        await signInAnonymously(auth);
+                    } catch (e) {
+                        console.warn("Anonymous auth failed (this is expected if you haven't enabled it in Firebase Console):", e);
                     }
-                    setData(newData);
+                    setFirebaseReady(true);
                 };
-                fetchData();
-            }, [weekStr, dealers]);
-
-            const downloadCSV = () => {
-                let csv = '\uFEFFYear,Month,WK,Date,TYPE,Model,Model2,P/N,SAP P/N,TITLE,CHN TITLE,POS,8D Code,Customer category,Customer type,Customer,B/S,IN,OUT,STOCK\n'; 
-                
-                const dateRange = getDateRangeOfWeek(week, year);
-                const monthStr = MONTH_NAMES[new Date().getMonth()]; 
-
-                dealers.forEach(d => {
-                    products.forEach(p => {
-                        const item = data[d.username]?.[p.pn] || { bs: 0, in: 0, out: 0, stock: 0 };
-                        const row = [
-                            year,
-                            monthStr,
-                            week,
-                            dateRange,
-                            p.type || '',
-                            p.model || '',
-                            p.model2 || '',
-                            p.pn,
-                            p.sap_pn || '',
-                            `"${(p.title || '').replace(/"/g, '""')}"`,
-                            `"${(p.chn_title || '').replace(/"/g, '""')}"`,
-                            p.pos_code || '',
-                            p.eight_d_code || '',
-                            p.cust_category || '',
-                            p.cust_type || '',
-                            d.erp_code || d.username,
-                            item.bs || 0,
-                            item.in || 0,
-                            item.out || 0,
-                            item.stock || 0
-                        ];
-                        csv += row.join(',') + '\n';
-                    });
+                initAuth();
+            }, []);
+            
+            // 2. Data Subscriptions (Only after user is logged into the APP level)
+            useEffect(() => {
+                if(!user) return;
+                const unsub1 = onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'products')), s => {
+                    setProducts(s.docs.map(d=>({id: d.id, ...d.data()})).sort((a,b)=>a.sortOrder-b.sortOrder));
                 });
-                
-                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                const link = document.createElement("a");
-                const url = URL.createObjectURL(blob);
-                link.setAttribute("href", url);
-                link.setAttribute("download", `SONY_WSR_Aggregate_${weekStr}.csv`);
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            };
+                const unsub2 = onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'accounts')), s => {
+                    setAccounts(s.docs.map(d=>({id: d.id, ...d.data()})));
+                });
+                return () => { unsub1(); unsub2(); };
+            }, [user]);
+
+            if (!firebaseReady) {
+                 return (
+                    <div className="min-h-screen bg-gray-900 flex items-center justify-center text-white">
+                        <div className="flex flex-col items-center">
+                            <Loader2 className="animate-spin mb-2" size={32} />
+                            <div>System Initializing...</div>
+                        </div>
+                    </div>
+                 );
+            }
+
+            if (!user) return <LoginScreen onLogin={setUser} />;
 
             return (
-                <div className="bg-white rounded-lg shadow border border-gray-200">
-                    <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                        <h3 className="font-bold flex items-center text-gray-700"><BarChart3 className="mr-2" size={20}/> 總代理匯總報表 ({weekStr})</h3>
-                        <button onClick={downloadCSV} className="bg-gray-800 text-white px-3 py-1.5 rounded text-sm flex items-center hover:bg-gray-700"><ArrowDownToLine size={16} className="mr-1"/> 匯出完整 Excel 格式 (CSV)</button>
+                <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
+                    <div className="bg-black text-white p-4 flex justify-between items-center sticky top-0 z-50">
+                        <div className="font-bold text-xl flex items-center">SONY WSR <span className="ml-4 text-xs font-normal bg-gray-800 px-2 py-1 rounded text-gray-300">User: {user.role==='admin'?'Admin':user.uid}</span></div>
+                        <div className="flex gap-4">
+                            {user.role==='admin' && (
+                                <>
+                                <button onClick={()=>setView('report')} className={view==='report'?'text-white':'text-gray-400'}>單店檢視</button>
+                                <button onClick={()=>setView('import')} className={view==='import'?'text-white':'text-gray-400'}>進貨匯入</button>
+                                <button onClick={()=>setView('products')} className={view==='products'?'text-white':'text-gray-400'}>產品資料庫</button>
+                                <button onClick={()=>setView('accounts')} className={view==='accounts'?'text-white':'text-gray-400'}>帳號管理</button>
+                                </>
+                            )}
+                            <button onClick={()=>setUser(null)}>登出</button>
+                        </div>
                     </div>
-                    <div className="p-8 text-center text-gray-500">
-                        <p>此頁面僅供匯出檔案使用。請點擊上方按鈕下載符合原廠格式的完整報表。</p>
+                    
+                    <div className="max-w-7xl mx-auto p-4">
+                        <div className="bg-white p-4 rounded shadow mb-4 flex justify-between items-center">
+                             <div className="flex items-center gap-4">
+                                <button onClick={()=>setWeek(w=>({...w, week: w.week-1}))} className="p-2 hover:bg-gray-100 rounded-full"><ChevronLeft/></button>
+                                <div className="text-center"><div className="font-bold text-xl">{weekStr}</div><div className="text-xs text-gray-500">{getDateRangeOfWeek(week.week, week.year)}</div></div>
+                                <button onClick={()=>setWeek(w=>({...w, week: w.week+1}))} className="p-2 hover:bg-gray-100 rounded-full"><ChevronRight/></button>
+                             </div>
+                        </div>
+
+                        {view === 'accounts' && <AccountManager accounts={accounts} />}
+                        {view === 'products' && <ProductManager products={products} />}
+                        {view === 'import' && <ImportManager weekStr={weekStr} products={products} accounts={accounts} />}
+                        {view === 'report' && <WeeklyReport user={user} weekStr={weekStr} products={products} year={week.year} week={week.week} dealers={accounts.filter(a=>a.role==='dealer')} isAdmin={user.role==='admin'} />}
                     </div>
                 </div>
             );

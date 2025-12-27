@@ -45,10 +45,12 @@
         import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, query, writeBatch, getDocs, deleteDoc, updateDoc, where } from 'firebase/firestore';
         
         // Ensure all icons used are imported
+        // Removed LockKeyhole as it caused an error, replaced usage with Lock
         import { 
             BarChart3, Save, Upload, FileSpreadsheet, Database, Users, LogOut, ChevronLeft, ChevronRight, 
             Search, Plus, ArrowDownToLine, Lock, FileText, FileUp, AlertCircle, XCircle, CheckCircle, 
-            Trash2, AlertTriangle, Loader2, RefreshCw, Eye, EyeOff, UserCog, Key, RotateCcw, ShieldAlert, X, Eraser, Bug, Terminal
+            Trash2, AlertTriangle, Loader2, RefreshCw, Eye, EyeOff, UserCog, Key, RotateCcw, ShieldAlert, X, Eraser, Bug, Terminal,
+            Sigma, Send, ClipboardList, Download
         } from 'lucide-react';
 
         // --- Firebase Configuration & Initialization ---
@@ -90,6 +92,8 @@
 
         const INITIAL_DATE = new Date(); 
         const getWeekString = (y, w) => `${y}-W${w.toString().padStart(2, '0')}`;
+        
+        // Helper to get formatted date range string "MM/DD~MM/DD"
         const getDateRangeOfWeek = (w, y) => {
             const d = (1 + (w - 1) * 7);
             const date = new Date(y, 0, d);
@@ -97,22 +101,41 @@
             const diff = date.getDate() - day + (day === 0 ? -6 : 1);
             const start = new Date(date.setDate(diff));
             const end = new Date(date.setDate(start.getDate() + 6));
-            return `${start.getMonth()+1}/${start.getDate()}~${end.getMonth()+1}/${end.getDate()}`;
+            return `${(start.getMonth()+1).toString().padStart(2,'0')}/${start.getDate().toString().padStart(2,'0')}~${(end.getMonth()+1).toString().padStart(2,'0')}/${end.getDate().toString().padStart(2,'0')}`;
         };
 
-        const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        // Helper to get Month name (e.g., "Dec") from week number
+        const getMonthFromWeek = (w, y) => {
+            const d = (1 + (w - 1) * 7);
+            const date = new Date(y, 0, d);
+            const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            return monthNames[date.getMonth()];
+        };
+
+        const getPrevWeekStr = (weekStr) => {
+            if (!weekStr) return '';
+            const [yStr, wStr] = weekStr.split('-W');
+            const y = parseInt(yStr);
+            const w = parseInt(wStr);
+            
+            const d = (1 + (w - 1) * 7);
+            const date = new Date(y, 0, d);
+            date.setDate(date.getDate() - 7);
+            
+            const nw = getWeekNumber(date);
+            return getWeekString(nw.year, nw.week);
+        };
 
         // --- Data Normalizer (Fix for Flat vs Nested Structure) ---
-        // 這就是解決您問題的關鍵函數
         const normalizeReportData = (docData) => {
             if (!docData) return {};
 
-            // 情況 1: 標準巢狀物件 (items: { Key: { in: 1 } }) - 理想情況
+            // 情況 1: 標準巢狀物件 (items: { Key: { in: 1 } })
             if (docData.items && typeof docData.items === 'object' && !Array.isArray(docData.items)) {
                 return docData.items;
             }
 
-            // 情況 2: 扁平化 Key ("items.Key.in": 1) - 您目前的狀況
+            // 情況 2: 扁平化 Key ("items.Key.in": 1)
             const items = {};
             Object.keys(docData).forEach(key => {
                 if (key.startsWith('items.')) {
@@ -582,11 +605,15 @@
                         const data = {
                             id: docId,
                             internal_code: internal,
+                            type: cleanStr(c[5]), // New: TYPE
+                            model: cleanStr(c[6]), // New: Model
+                            model2: cleanStr(c[7]), // New: Model2
                             pn: pn,
-                            sap_pn: sap,
-                            pos_code: pos,
-                            chn_title: cleanStr(c[11]),
+                            sap_pn: cleanStr(c[9]),
                             title: cleanStr(c[10]),
+                            chn_title: cleanStr(c[11]),
+                            pos_code: pos,
+                            eight_d_code: cleanStr(c[13]), // New: 8D Code
                             sortOrder: idx+1,
                             isActive: true
                         };
@@ -638,39 +665,264 @@
             );
         };
 
+        // --- Component: Summary Report (Updated) ---
+        const SummaryReport = ({ weekStr, products, year, week }) => {
+            const [summary, setSummary] = useState({});
+            const [loading, setLoading] = useState(false);
+
+            useEffect(() => {
+                setLoading(true);
+                const q = query(
+                    collection(db, 'artifacts', appId, 'public', 'data', 'weekly_reports'),
+                    where('week', '==', weekStr)
+                );
+                
+                const unsub = onSnapshot(q, (snapshot) => {
+                    const totals = {};
+                    products.forEach(p => {
+                        totals[p.id] = { in: 0, out: 0, stock: 0, bs: 0 };
+                    });
+
+                    snapshot.docs.forEach(doc => {
+                        const data = normalizeReportData(doc.data());
+                        Object.keys(data).forEach(prodKey => {
+                            if (totals[prodKey]) {
+                                const item = data[prodKey];
+                                const inQty = (item.in || 0);
+                                const outQty = (item.out || 0);
+                                const bsQty = (item.bs || 0);
+                                const stockQty = bsQty + inQty - outQty;
+
+                                totals[prodKey].bs += bsQty;
+                                totals[prodKey].in += inQty;
+                                totals[prodKey].out += outQty;
+                                totals[prodKey].stock += stockQty;
+                            }
+                        });
+                    });
+                    setSummary(totals);
+                    setLoading(false);
+                });
+                return () => unsub();
+            }, [weekStr, products]);
+
+            const exportCSV = () => {
+                // Prepare Headers
+                const headers = [
+                    "Year", "Month", "WK", "Date", 
+                    "TYPE", "Model", "Model2", "P/N", "SAP P/N", 
+                    "TITLE", "CHN TITLE", "POS", "8D Code", 
+                    "Customer category", "Customer type", "Customer", 
+                    "B/S", "IN", "OUT", "STOCK"
+                ];
+
+                // Prepare Data Rows
+                const month = getMonthFromWeek(week, year);
+                const wkStr = `WK${week}`;
+                const dateRange = getDateRangeOfWeek(week, year);
+
+                const rows = products.map(p => {
+                    const s = summary[p.id] || { bs: 0, in: 0, out: 0, stock: 0 };
+                    return [
+                        // Removed p.internal_code || p.id, // 料號
+                        year,                    // Year
+                        month,                   // Month
+                        wkStr,                   // WK
+                        dateRange,               // Date
+                        p.type || "",            // TYPE
+                        p.model || "",           // Model
+                        p.model2 || "",          // Model2
+                        p.pn || "",              // P/N
+                        p.sap_pn || "",          // SAP P/N
+                        p.title || "",           // TITLE
+                        p.chn_title || "",       // CHN TITLE
+                        p.pos_code || "",        // POS
+                        p.eight_d_code || "",    // 8D Code
+                        "AGM",                   // Customer category (Hardcoded based on WSR999 sample)
+                        "",                      // Customer type
+                        "",                      // Customer
+                        s.bs,                    // B/S
+                        s.in,                    // IN
+                        s.out,                   // OUT
+                        s.stock                  // STOCK
+                    ].map(field => `"${String(field || '').replace(/"/g, '""')}"`).join(','); // CSV Escaping
+                });
+
+                const csvContent = "\uFEFF" + [headers.join(','), ...rows].join('\n'); // Add BOM for Excel
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `WSR_Summary_${weekStr}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            return (
+                <div className="bg-white rounded shadow flex flex-col h-[calc(100vh-200px)]">
+                    <div className="p-4 border-b bg-blue-50 flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                            <h2 className="font-bold text-lg flex items-center text-blue-800"><Sigma className="mr-2"/> 進銷彙總報表 ({weekStr})</h2>
+                        </div>
+                        <div className="flex gap-2">
+                            {loading && <div className="text-sm text-blue-600 flex items-center"><Loader2 className="animate-spin mr-1" size={14}/> 計算中...</div>}
+                            <button onClick={exportCSV} className="bg-green-600 text-white px-3 py-1 rounded flex items-center hover:bg-green-700 shadow-sm">
+                                <Download size={16} className="mr-2" /> 匯出 WSR CSV
+                            </button>
+                        </div>
+                    </div>
+                    <div className="overflow-auto flex-1">
+                        <table className="w-full text-sm text-left border-collapse">
+                            <thead className="bg-gray-100 sticky top-0 shadow-sm">
+                                <tr>
+                                    <th className="p-2 border-r w-28">POS</th>
+                                    <th className="p-2 border-r w-32">P/N</th>
+                                    <th className="p-2 min-w-[200px]">產品名稱</th>
+                                    <th className="p-2 w-24 text-right bg-blue-50 font-bold">總期初 (B/S)</th>
+                                    <th className="p-2 w-24 text-right bg-green-100 font-bold">總進貨 (IN)</th>
+                                    <th className="p-2 w-24 text-right bg-yellow-100 font-bold">總銷貨 (OUT)</th>
+                                    <th className="p-2 w-24 text-right bg-gray-200 font-bold">總庫存 (STOCK)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {products.map(p => {
+                                    const s = summary[p.id] || { bs: 0, in: 0, out: 0, stock: 0 };
+                                    return (
+                                        <tr key={p.id} className="hover:bg-gray-50 border-b">
+                                            <td className="p-2 border-r font-mono text-xs">{p.pos_code}</td>
+                                            <td className="p-2 border-r font-mono text-xs">{p.pn}</td>
+                                            <td className="p-2 text-xs">{p.chn_title}</td>
+                                            <td className="p-2 text-right bg-blue-50 font-mono font-bold text-blue-800">{s.bs}</td>
+                                            <td className="p-2 text-right bg-green-50 font-mono font-bold text-green-700">{s.in}</td>
+                                            <td className="p-2 text-right bg-yellow-50 font-mono font-bold text-yellow-700">{s.out}</td>
+                                            <td className="p-2 text-right bg-gray-100 font-mono font-bold text-gray-800">{s.stock}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- New Component: Submission Status Panel ---
+        const SubmissionStatusPanel = ({ weekStr, accounts, onSelectDealer }) => {
+            const [reportStatuses, setReportStatuses] = useState({});
+            const [loading, setLoading] = useState(true);
+
+            const dealerAccounts = useMemo(() => accounts.filter(a => a.role === 'dealer'), [accounts]);
+
+            useEffect(() => {
+                setLoading(true);
+                // Fetch ALL reports for the week to check statuses
+                const q = query(
+                    collection(db, 'artifacts', appId, 'public', 'data', 'weekly_reports'),
+                    where('week', '==', weekStr)
+                );
+                
+                const unsub = onSnapshot(q, (snapshot) => {
+                    const statuses = {};
+                    snapshot.docs.forEach(doc => {
+                        const data = doc.data();
+                        if (data.dealerId) {
+                            statuses[data.dealerId] = {
+                                status: data.status, // 'submitted' or undefined
+                                submittedAt: data.submittedAt
+                            };
+                        }
+                    });
+                    setReportStatuses(statuses);
+                    setLoading(false);
+                });
+                return () => unsub();
+            }, [weekStr]);
+
+            return (
+                <div className="bg-white p-6 rounded-lg shadow h-[calc(100vh-200px)] overflow-auto">
+                    <h2 className="font-bold text-lg mb-4 flex items-center"><ClipboardList className="mr-2"/> 週報繳交狀況 ({weekStr})</h2>
+                    <table className="w-full text-sm text-left">
+                        <thead className="bg-gray-100 sticky top-0">
+                            <tr>
+                                <th className="p-3">經銷商</th>
+                                <th className="p-3">ERP 代碼</th>
+                                <th className="p-3">繳交狀態</th>
+                                <th className="p-3 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                            {dealerAccounts.map(dealer => {
+                                const info = reportStatuses[dealer.username];
+                                const isSubmitted = info?.status === 'submitted';
+                                return (
+                                    <tr key={dealer.username} className="hover:bg-gray-50">
+                                        <td className="p-3 font-bold">{dealer.name} <span className="text-xs text-gray-400 font-normal">({dealer.username})</span></td>
+                                        <td className="p-3 font-mono">{dealer.erp_code}</td>
+                                        <td className="p-3">
+                                            {isSubmitted ? (
+                                                <span className="inline-flex items-center text-green-700 bg-green-100 px-2 py-1 rounded text-xs font-bold">
+                                                    <CheckCircle size={14} className="mr-1"/> 已送出 ({new Date(info.submittedAt).toLocaleDateString()})
+                                                </span>
+                                            ) : (
+                                                <span className="inline-flex items-center text-red-700 bg-red-100 px-2 py-1 rounded text-xs font-bold">
+                                                    <XCircle size={14} className="mr-1"/> 未送出
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="p-3 text-right">
+                                            <button 
+                                                onClick={() => onSelectDealer(dealer.username)}
+                                                className="text-blue-600 hover:text-blue-800 underline"
+                                            >
+                                                查看報表
+                                            </button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        };
+
         const WeeklyReport = ({ user, weekStr, products, year, week, dealers, isAdmin }) => {
             const [report, setReport] = useState({});
+            const [prevReport, setPrevReport] = useState({}); // New State: Previous week data
             const [targetDealer, setTargetDealer] = useState(isAdmin ? '' : user.uid);
+            const [reportStatus, setReportStatus] = useState(null); 
             const [snapshotError, setSnapshotError] = useState(null);
+            const [modalConfig, setModalConfig] = useState(null);
             
-            // --- NEW: Raw Data Debug State ---
             const [docExists, setDocExists] = useState(false);
             const [rawData, setRawData] = useState(null);
-            // ---------------------------------
 
             useEffect(() => {
                 if(isAdmin && dealers.length > 0 && !targetDealer) setTargetDealer(dealers[0].username);
             }, [dealers, isAdmin]);
 
+            // Effect: Fetch Current Week Data
             useEffect(() => {
                 if(!targetDealer) return;
                 setSnapshotError(null);
                 setReport({}); 
-                setRawData(null); // Reset raw data
+                setRawData(null); 
                 setDocExists(false);
+                setReportStatus(null);
                 
                 const unsub = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${targetDealer}`), 
                     (snap) => {
                         setDocExists(snap.exists());
                         if (snap.exists()) {
                             const data = snap.data();
-                            setRawData(data); // Store Raw Data for Debugging
-                            
-                            // *** CRITICAL FIX: Normalize Data Structure ***
+                            setRawData(data);
+                            setReportStatus(data.status);
                             const normalizedItems = normalizeReportData(data);
                             setReport(normalizedItems);
                         } else {
                             setReport({});
+                            setReportStatus(null);
                             setRawData(null);
                         }
                     },
@@ -682,15 +934,73 @@
                 return () => unsub();
             }, [weekStr, targetDealer]);
 
+            // New Effect: Fetch Previous Week Data for B/S
+            useEffect(() => {
+                if(!targetDealer || !weekStr) return;
+                const prevWeekStr = getPrevWeekStr(weekStr);
+                
+                const unsub = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${prevWeekStr}_${targetDealer}`), 
+                    (snap) => {
+                        if (snap.exists()) {
+                            const data = normalizeReportData(snap.data());
+                            setPrevReport(data);
+                        } else {
+                            setPrevReport({});
+                        }
+                    }
+                );
+                return () => unsub();
+            }, [weekStr, targetDealer]);
+
+            const isLocked = !isAdmin && reportStatus === 'submitted';
+
             const ghostData = useMemo(() => {
                 const productKeys = new Set(products.map(p => p.id));
                 return Object.keys(report).filter(k => (report[k].in > 0 || report[k].stock > 0) && !productKeys.has(k));
             }, [report, products]);
 
             const updateVal = async (key, field, val) => {
+                if (isLocked) return; 
                 const ref = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${targetDealer}`);
                 const payload = { dealerId: targetDealer, week: weekStr, [`items.${key}.${field}`]: parseFloat(val)||0 };
                 await setDoc(ref, payload, { merge: true });
+            };
+
+            const handleSubmitReport = () => {
+                setModalConfig({
+                    title: "確認送出週報",
+                    message: "送出後資料將被鎖定，無法自行修改。\n若需修改請聯繫管理員。\n\n確定要送出本週報表嗎？",
+                    onConfirm: async () => {
+                        const ref = doc(db, 'artifacts', appId, 'public', 'data', 'weekly_reports', `report_${weekStr}_${targetDealer}`);
+                        await setDoc(ref, { 
+                            dealerId: targetDealer, 
+                            week: weekStr, 
+                            status: 'submitted', 
+                            submittedAt: new Date().toISOString() 
+                        }, { merge: true });
+                        setModalConfig(null);
+                    },
+                    confirmText: "確認送出"
+                });
+            };
+
+            // Enhanced change handler for OUT validation and Admin warning
+            const handleOutChange = (prodKey, valStr, maxStock) => {
+                const newVal = valStr === '' ? 0 : parseFloat(valStr);
+                
+                if (newVal < 0) return; // Prevent negative inputs
+                if (newVal > maxStock) {
+                    alert(`錯誤：銷貨數量 (${newVal}) 不能超過可銷售庫存 (${maxStock})\n\n可銷售庫存 = 期初庫存 (B/S) + 本週進貨 (IN)`);
+                    return;
+                }
+
+                if (isAdmin) {
+                    if (confirm(`管理者確認：\n您確定要修改此 OUT 欄位嗎？`)) {
+                        updateVal(prodKey, 'out', newVal);
+                    }
+                } else {
+                    updateVal(prodKey, 'out', newVal);
+                }
             };
 
             const dbPath = `artifacts/${appId}/public/data/weekly_reports/report_${weekStr}_${targetDealer}`;
@@ -700,17 +1010,15 @@
 
             return (
                 <div className="bg-white rounded shadow flex flex-col h-[calc(100vh-200px)]">
+                    {modalConfig && <ConfirmModal {...modalConfig} onCancel={()=>setModalConfig(null)} />}
+                    
                     {/* Add Debug Section for Admin */}
                     {isAdmin && (
-                         <div className="bg-gray-100 p-2 text-xs border-b border-gray-300 font-mono text-gray-600 break-all">
+                         <div className="bg-gray-100 p-2 text-xs border-b border-gray-300 font-mono text-gray-600 break-all hidden">
                             <span className="font-bold text-red-600">[DEBUG]</span> <br/>
-                            <span className="font-bold">Firebase Auth:</span> {currentUser ? `Signed In (${currentUser.isAnonymous ? 'Anon' : 'User'})` : <span className="text-red-600 font-bold bg-yellow-200 px-1">No (Anonymous/Null) - Check Console</span>} <br/>
-                            <span className="font-bold">Path:</span> {dbPath} <br/>
-                            <span className="font-bold">Doc Exists:</span> {docExists ? <span className="text-green-600 font-bold">YES</span> : <span className="text-red-600 font-bold">NO</span>} <br/>
-                            <span className="font-bold">Items Count:</span> {Object.keys(report).length} <br/>
-                            <div className="mt-1 p-1 bg-gray-200 rounded max-h-20 overflow-auto">
-                                <span className="font-bold">Raw Content:</span> {rawData ? JSON.stringify(rawData) : 'null'}
-                            </div>
+                            <span className="font-bold">Auth:</span> {currentUser ? (currentUser.isAnonymous ? 'Anon' : 'User') : 'No'} | 
+                            <span className="font-bold"> Path:</span> {dbPath} | 
+                            <span className="font-bold"> Status:</span> {reportStatus || 'Draft'}
                          </div>
                     )}
 
@@ -719,21 +1027,44 @@
                             <h2 className="font-bold text-lg">週報表填寫</h2>
                             {isAdmin && <select value={targetDealer} onChange={e=>setTargetDealer(e.target.value)} className="border rounded p-1">{dealers.map(d=><option key={d.username} value={d.username}>{d.name}</option>)}</select>}
                         </div>
+                        
+                        <div className="flex items-center gap-2">
+                            {reportStatus === 'submitted' ? (
+                                <div className={`flex items-center px-3 py-1 rounded text-sm font-bold ${isAdmin ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-200 text-gray-600'}`}>
+                                    {isAdmin ? <><UserCog size={16} className="mr-1"/> 管理員修正模式 (已送出)</> : <><Lock size={16} className="mr-1"/> 已送出 (唯讀)</>}
+                                </div>
+                            ) : (
+                                !isAdmin && (
+                                    <button 
+                                        onClick={handleSubmitReport}
+                                        className="bg-blue-600 text-white px-4 py-2 rounded flex items-center hover:bg-blue-700 shadow-sm transition-all animate-pulse"
+                                    >
+                                        <Send size={16} className="mr-2" /> 送出資料
+                                    </button>
+                                )
+                            )}
+                        </div>
                     </div>
+
                     {ghostData.length > 0 && (
                         <div className="bg-yellow-100 p-2 text-xs text-yellow-800">
                             <div className="font-bold flex items-center"><AlertCircle size={14} className="mr-1"/> 發現幽靈數據 (Key 不匹配):</div>
                             {ghostData.map(k => <span key={k} className="mr-2">{k}: IN={report[k].in}</span>)}
                         </div>
                     )}
-                    <div className="overflow-auto flex-1">
+                    
+                    <div className="overflow-auto flex-1 relative">
+                        {/* Overlay when locked for dealer */}
+                        {isLocked && <div className="absolute inset-0 z-10 bg-gray-50/30 cursor-not-allowed" title="資料已送出，無法修改"></div>}
+                        
                         <table className="w-full text-sm text-left border-collapse">
-                            <thead className="bg-gray-100 sticky top-0 shadow-sm">
+                            <thead className="bg-gray-100 sticky top-0 shadow-sm z-20">
                                 <tr>
-                                    <th className="p-2 border-r w-28">料號 (Key)</th>
+                                    {/* HIDDEN: <th className="p-2 border-r w-28">料號 (Key)</th> */}
                                     <th className="p-2 border-r w-28">POS</th>
                                     <th className="p-2 border-r w-32">P/N</th>
                                     <th className="p-2 min-w-[200px]">產品名稱</th>
+                                    <th className="p-2 w-20 text-right bg-blue-50 font-bold">B/S (期初)</th>
                                     <th className="p-2 w-20 text-right bg-green-50">IN</th>
                                     <th className="p-2 w-20 text-right bg-yellow-50">OUT</th>
                                     <th className="p-2 w-20 text-right bg-gray-100">STOCK</th>
@@ -742,15 +1073,46 @@
                             <tbody>
                                 {products.map(p => {
                                     const r = report[p.id] || {};
+                                    
+                                    // Calculate B/S from Previous Week
+                                    const prevItem = prevReport[p.id] || {bs:0, in:0, out:0};
+                                    // Previous Stock = Prev BS + Prev IN - Prev OUT
+                                    const calculatedBS = (prevItem.bs || 0) + (prevItem.in || 0) - (prevItem.out || 0);
+                                    
+                                    // If current report has explicit BS saved (optional future feature), use it, otherwise use calculated
+                                    const currentBS = r.bs !== undefined ? r.bs : calculatedBS;
+                                    
+                                    const currentIn = r.in || 0;
+                                    const currentOut = r.out || 0;
+                                    const currentStock = currentBS + currentIn - currentOut;
+                                    const maxStock = currentBS + currentIn; // Max allowable OUT
+
                                     return (
                                         <tr key={p.id} className="hover:bg-gray-50 border-b">
-                                            <td className="p-2 border-r font-mono text-blue-700 text-xs">{p.id}</td>
+                                            {/* HIDDEN: <td className="p-2 border-r font-mono text-blue-700 text-xs">{p.id}</td> */}
                                             <td className="p-2 border-r font-mono text-xs">{p.pos_code}</td>
                                             <td className="p-2 border-r font-mono text-xs">{p.pn}</td>
                                             <td className="p-2 text-xs">{p.chn_title}</td>
-                                            <td className={`p-2 text-right bg-green-50 font-mono ${r.in>0?'text-green-700 font-bold':''}`}>{r.in||'-'}</td>
-                                            <td className="p-2 bg-yellow-50"><input type="number" className="w-full text-right bg-transparent" placeholder="0" value={r.out||''} onChange={e=>updateVal(p.id, 'out', e.target.value)} /></td>
-                                            <td className="p-2 text-right bg-gray-100 font-mono">{((r.bs||0) + (r.in||0) - (r.out||0))}</td>
+                                            
+                                            {/* B/S Column */}
+                                            <td className="p-2 text-right bg-blue-50 font-mono text-blue-800 font-bold">
+                                                {currentBS}
+                                            </td>
+
+                                            <td className={`p-2 text-right bg-green-50 font-mono ${r.in>0?'text-green-700 font-bold':''}`}>{currentIn||'-'}</td>
+                                            
+                                            <td className="p-2 bg-yellow-50">
+                                                <input 
+                                                    type="number" 
+                                                    disabled={isLocked}
+                                                    className="w-full text-right bg-transparent disabled:text-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 rounded px-1" 
+                                                    placeholder="0" 
+                                                    value={r.out||''} 
+                                                    onChange={e => handleOutChange(p.id, e.target.value, maxStock)}
+                                                />
+                                            </td>
+                                            
+                                            <td className="p-2 text-right bg-gray-100 font-mono font-bold">{currentStock}</td>
                                         </tr>
                                     );
                                 })}
@@ -816,6 +1178,8 @@
                             {user.role==='admin' && (
                                 <>
                                 <button onClick={()=>setView('report')} className={view==='report'?'text-white':'text-gray-400'}>單店檢視</button>
+                                <button onClick={()=>setView('summary')} className={view==='summary'?'text-white':'text-gray-400'}>彙總報表</button>
+                                <button onClick={()=>setView('status')} className={view==='status'?'text-white':'text-gray-400'}>繳交狀況</button>
                                 <button onClick={()=>setView('import')} className={view==='import'?'text-white':'text-gray-400'}>進貨匯入</button>
                                 <button onClick={()=>setView('products')} className={view==='products'?'text-white':'text-gray-400'}>產品資料庫</button>
                                 <button onClick={()=>setView('accounts')} className={view==='accounts'?'text-white':'text-gray-400'}>帳號管理</button>
@@ -837,6 +1201,8 @@
                         {view === 'accounts' && <AccountManager accounts={accounts} />}
                         {view === 'products' && <ProductManager products={products} />}
                         {view === 'import' && <ImportManager weekStr={weekStr} products={products} accounts={accounts} />}
+                        {view === 'summary' && <SummaryReport weekStr={weekStr} products={products} year={week.year} week={week.week} />}
+                        {view === 'status' && <SubmissionStatusPanel weekStr={weekStr} accounts={accounts} onSelectDealer={(dId)=>{setView('report'); /* We rely on admin changing dropdown manually in next render, or we could pass state up, but keeping it simple for now as admin panel has dropdown */ }} />} 
                         {view === 'report' && <WeeklyReport user={user} weekStr={weekStr} products={products} year={week.year} week={week.week} dealers={accounts.filter(a=>a.role==='dealer')} isAdmin={user.role==='admin'} />}
                     </div>
                 </div>
